@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Drawio Collaboration</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: #0b0c10; color: #e5e5e5; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    header { padding: 10px 12px; background: #1f2833; display: flex; align-items: center; justify-content: space-between; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .badge { padding: 2px 6px; border-radius: 100px; background: #233042; font-size: 12px; }
+    #editor { width: 100%; height: calc(100% - 48px); border: 0; display: block; }
+    button, a { background: #0e1116; color: #e5e5e5; border: 1px solid #2f3742; border-radius: 8px; padding: 8px 10px; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="row">
+      <strong id="file">Loading...</strong>
+      <span class="badge" id="user">guest</span>
+      <span class="badge" id="status">Connecting...</span>
+      <span class="badge" id="version">v0</span>
+    </div>
+    <div class="row">
+      <a href="/" id="back">Back</a>
+    </div>
+  </header>
+  <iframe id="editor" allow="fullscreen" src="https://embed.diagrams.net/?embed=1&ui=min&proto=json&spin=1&noDevice=1&saveAndExit=1&xml=1"></iframe>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const params = new URLSearchParams(location.search);
+    const fileName = params.get('name');
+    $('file').textContent = fileName || '(no file)';
+    $('back').href = '/';
+
+    let ws = null;
+    let currentVersion = 0;
+    let isEditorReady = false;
+    let lastXml = '';
+    let selfUpdateToken = 0; // increments on our own WS sends to detect self echoes (best-effort)
+
+    async function refreshMe() {
+      try {
+        const res = await fetch('/me', { credentials: 'include' });
+        if (res.ok) {
+          const me = await res.json();
+          $('user').textContent = me.username;
+        } else {
+          $('user').textContent = 'guest';
+        }
+      } catch {}
+    }
+
+    async function loadInitial() {
+      if (!fileName) return;
+      const resp = await fetch(`/files/${encodeURIComponent(fileName)}`, { credentials: 'include' });
+      if (!resp.ok) throw new Error(await resp.text());
+      const meta = await resp.json();
+      currentVersion = meta.version || 0;
+      $('version').textContent = 'v' + currentVersion;
+      lastXml = meta.content || '';
+      // If editor already ready, push content
+      if (isEditorReady) {
+        postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: fileName });
+      }
+    }
+
+    function connectWS() {
+      if (!fileName) return;
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(`${proto}://${location.host}/ws/${encodeURIComponent(fileName)}`);
+      ws.onopen = () => { $('status').textContent = 'Connected'; };
+      ws.onclose = () => { $('status').textContent = 'Disconnected'; };
+      ws.onerror = () => { $('status').textContent = 'Error'; };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'init') {
+            currentVersion = msg.version || 0;
+            $('version').textContent = 'v' + currentVersion;
+            lastXml = msg.content || '';
+            if (isEditorReady) {
+              postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: fileName });
+            }
+          } else if (msg.type === 'update') {
+            currentVersion = msg.version || currentVersion;
+            $('version').textContent = 'v' + currentVersion;
+            if (msg.content && msg.content !== lastXml) {
+              lastXml = msg.content;
+              // Try merge first; editor will attempt in-place merge with unsaved changes.
+              // Fallback: reload if merge is not supported by the embed.
+              try {
+                postToEditor({ action: 'merge', xml: lastXml });
+              } catch {
+                postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: fileName });
+              }
+            }
+          }
+        } catch (e) {
+          console.error('bad ws message', e, ev.data);
+        }
+      };
+    }
+
+    function postToEditor(msg) {
+      const iframe = $('editor');
+      iframe.contentWindow.postMessage(JSON.stringify(msg), 'https://embed.diagrams.net');
+    }
+
+    // Listen to messages from the editor
+    let waitingExportForSave = false;
+
+    window.addEventListener('message', async (evt) => {
+      // Must be stringified JSON
+      let data = null;
+      try {
+        data = JSON.parse(evt.data);
+      } catch {
+        return;
+      }
+      // Editor ready lifecycle
+      if (data.event === 'init' || data.action === 'init') {
+        isEditorReady = true;
+        // Load initial xml once editor is ready
+        if (lastXml !== null) {
+          postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: fileName });
+        }
+        return;
+      }
+      // The editor asks us to save current XML
+      if (data.event === 'save' || data.action === 'save' || data.event === 'autosave') {
+        try {
+          $('status').textContent = 'Saving...';
+          let xml = data.xml || '';
+          // Fallback path: request export if xml not provided
+          if (!xml) {
+            waitingExportForSave = true;
+            postToEditor({ action: 'export', format: 'xml' });
+            return; // continue when we receive export
+          }
+          lastXml = xml;
+          // Broadcast via WS
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            selfUpdateToken++;
+            ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
+          }
+          // Persist via HTTP
+          const resp = await fetch(`/files/${encodeURIComponent(fileName)}`, {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: xml }),
+          });
+          if (!resp.ok) {
+            const msg = await resp.text();
+            $('status').textContent = `Save failed: ${msg || resp.status}`;
+            return;
+          }
+          $('status').textContent = 'Saved';
+          postToEditor({ action: 'saved' });
+          return;
+        } catch (e) {
+          $('status').textContent = `Save error`;
+          return;
+        }
+      }
+      // Editor export response (used when xml not included in save/autosave)
+      if (data.event === 'export') {
+        if (waitingExportForSave) {
+          waitingExportForSave = false;
+          const xml = data.data || data.xml || '';
+          if (!xml) {
+            $('status').textContent = 'Export failed';
+            return;
+          }
+          (async () => {
+            try {
+              lastXml = xml;
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                selfUpdateToken++;
+                ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
+              }
+              const resp = await fetch(`/files/${encodeURIComponent(fileName)}`, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content: xml }),
+              });
+              if (!resp.ok) {
+                const msg = await resp.text();
+                $('status').textContent = `Save failed: ${msg || resp.status}`;
+                return;
+              }
+              $('status').textContent = 'Saved';
+              postToEditor({ action: 'saved' });
+            } catch {
+              $('status').textContent = 'Save error';
+            }
+          })();
+          return;
+        }
+      }
+      // Exit from editor
+      if (data.event === 'exit' || data.action === 'exit') {
+        location.href = '/';
+        return;
+      }
+    });
+
+    $('editor').addEventListener('load', () => {
+      // The editor will send 'init' shortly; we don't send 'load' until then
+    });
+
+    refreshMe();
+    loadInitial().then(connectWS);
+  </script>
+</body>
+</html>
+
+

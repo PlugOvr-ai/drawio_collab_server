@@ -111,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/me", get(me))
         .route("/files", get(list_files))
         .route("/files/:name", get(get_file).put(put_file))
+        .route("/raw/:name", get(get_raw_file))
         .route("/ws/:name", get(ws_handler))
         .nest_service("/", ServeDir::new("static"))
         .layer(TraceLayer::new_for_http())
@@ -348,6 +349,30 @@ async fn put_file(
 }
 
 // ----- Routes: WebSocket -----
+
+async fn get_raw_file(
+    State(state): State<AppState>,
+    AxumPath(name): AxumPath<String>,
+) -> impl IntoResponse {
+    let decoded = percent_decode_str(&name).decode_utf8_lossy().to_string();
+    let Some(file_key) = to_file_key(&decoded) else {
+        return (StatusCode::BAD_REQUEST, "invalid file name").into_response();
+    };
+    match ensure_room_loaded(&state, &file_key).await {
+        Ok(room) => {
+            let content = room.content.read().await.clone();
+            let mut resp = Response::new(axum::body::Body::from(content));
+            let headers = resp.headers_mut();
+            headers.insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static("application/xml; charset=utf-8"));
+            headers.insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
+            resp
+        }
+        Err(err) => {
+            error!("get_raw_file error: {err:?}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
 
 async fn ws_handler(
     State(state): State<AppState>,

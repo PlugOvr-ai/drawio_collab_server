@@ -111,8 +111,17 @@
           const btn = document.createElement('button');
           btn.textContent = 'Open';
           btn.onclick = () => openFile(f.name);
+          const btn2 = document.createElement('a');
+          btn2.textContent = 'Open in draw.io';
+          btn2.href = `/drawio.html?name=${encodeURIComponent(f.name)}`;
+          btn2.style.padding = '6px 10px';
+          btn2.style.border = '1px solid #2f3742';
+          btn2.style.borderRadius = '8px';
+          btn2.style.textDecoration = 'none';
+          btn2.style.color = '#e5e5e5';
           li.appendChild(a);
           li.appendChild(btn);
+          li.appendChild(btn2);
           fileList.appendChild(li);
         }
       } catch (e) {
