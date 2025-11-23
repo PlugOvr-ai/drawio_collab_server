@@ -1,3 +1,4 @@
 target/
 draw.war
 static/diagrams/
+*.drawio
