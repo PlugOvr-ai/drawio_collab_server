@@ -14,7 +14,7 @@ use axum::{
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response, Redirect},
-    routing::{get, post, put, get_service},
+    routing::{get, post, put, delete, get_service},
     Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
@@ -111,6 +111,31 @@ struct FileListItem {
     name: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct FsEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+    size: Option<u64>,
+    modified_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RenameRequest {
+    new_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RenameBody {
+    from: String,
+    to: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MkdirBody {
+    path: String,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "drawioserver")]
 #[command(about = "Axum server for collaborative draw.io editing")]
@@ -162,7 +187,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/token", get(token_login))
     .route("/me", get(me).put(put_me))
         .route("/files", get(list_files))
-        .route("/files/:name", get(get_file).put(put_file))
+        .route("/files/:name", get(get_file).put(put_file).delete(delete_file))
+        .route("/files/:name/rename", post(rename_file))
+        // New query-based API for folders and downloads
+        .route("/api/list", get(api_list))
+        .route("/api/file", get(api_get_file).put(api_put_file).delete(api_delete_file))
+        .route("/api/rename", post(api_rename))
+        .route("/api/mkdir", post(api_mkdir))
+        .route("/api/download", get(api_download))
         .route("/raw/:name", get(get_raw_file))
         .route("/ws/:name", get(ws_handler))
         .fallback_service(
@@ -364,12 +396,39 @@ fn sanitize_name(name: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+fn sanitize_rel_path(path: &str) -> Option<String> {
+    // allow forward slashes as separators; forbid backslashes
+    if path.contains('\\') {
+        return None;
+    }
+    let trimmed = path.trim_matches('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for part in trimmed.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            return None;
+        }
+        let valid = part
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' ));
+        if !valid {
+            return None;
+        }
+        parts.push(part);
+    }
+    Some(parts.join("/"))
+}
+
 fn to_file_key(raw: &str) -> Option<String> {
     sanitize_name(raw)
 }
 
 fn to_data_path(data_dir: &Path, name: &str) -> PathBuf {
     data_dir.join(name)
+}
+
+fn to_data_rel_path(data_dir: &Path, rel: &str) -> PathBuf {
+    let normalized = rel.trim_matches('/');
+    data_dir.join(normalized)
 }
 
 async fn ensure_room_loaded(state: &AppState, file_key: &str) -> anyhow::Result<Arc<Room>> {
@@ -511,6 +570,62 @@ async fn put_file(
     }
 }
 
+async fn delete_file(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    AxumPath(name): AxumPath<String>,
+) -> impl IntoResponse {
+    let Some(_username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let decoded = percent_decode_str(&name).decode_utf8_lossy().to_string();
+    let Some(file_key) = to_file_key(&decoded) else {
+        return (StatusCode::BAD_REQUEST, "invalid file name").into_response();
+    };
+    let path = to_data_path(&state.data_dir, &file_key);
+    if let Err(err) = fs::remove_file(&path).await {
+        error!("delete file error: {err:?}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    state.rooms.remove(&file_key);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn rename_file(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    AxumPath(name): AxumPath<String>,
+    Json(req): Json<RenameRequest>,
+) -> impl IntoResponse {
+    let Some(_username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let decoded_old = percent_decode_str(&name).decode_utf8_lossy().to_string();
+    let Some(old_key) = to_file_key(&decoded_old) else {
+        return (StatusCode::BAD_REQUEST, "invalid old file name").into_response();
+    };
+    let Some(new_key) = to_file_key(&req.new_name) else {
+        return (StatusCode::BAD_REQUEST, "invalid new file name").into_response();
+    };
+    if !new_key.ends_with(".drawio") {
+        return (StatusCode::BAD_REQUEST, "new name must end with .drawio").into_response();
+    }
+    let old_path = to_data_path(&state.data_dir, &old_key);
+    let new_path = to_data_path(&state.data_dir, &new_key);
+    if let Err(err) = fs::rename(&old_path, &new_path).await {
+        error!("rename file error: {err:?}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    if let Some((_k, room)) = state.rooms.remove(&old_key) {
+        state.rooms.insert(new_key.clone(), room);
+    }
+    Json(serde_json::json!({ "name": new_key })).into_response()
+}
+
 // ----- Routes: WebSocket -----
 
 async fn get_raw_file(
@@ -556,9 +671,15 @@ async fn ws_handler(
     let Some(username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return (StatusCode::UNAUTHORIZED, "login required").into_response();
     };
-    let decoded = percent_decode_str(&name).decode_utf8_lossy().to_string();
-    let Some(file_key) = to_file_key(&decoded) else {
-        return (StatusCode::BAD_REQUEST, "invalid file name").into_response();
+    // Prefer path from query (?path=...) to support folders; fallback to :name
+    let file_key = if let Some(p) = q.get("path") {
+        if let Some(safe) = sanitize_rel_path(p) { safe } else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() }
+    } else {
+        let decoded = percent_decode_str(&name).decode_utf8_lossy().to_string();
+        let Some(file_key) = to_file_key(&decoded) else {
+            return (StatusCode::BAD_REQUEST, "invalid file name").into_response();
+        };
+        file_key
     };
     let user_agent = headers
         .get("user-agent")
@@ -766,4 +887,203 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
     let _ = room.tx.send(ServerWsMessage::PresenceLeave { username });
 }
 
+// ----- New Folder-capable API -----
+
+async fn api_list(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if state.require_token {
+        if get_authorized_user_from_header_or_query(&state, &headers, &q, &jar).is_none() {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
+    let rel = q.get("path").cloned().unwrap_or_else(|| "".to_string());
+    let Some(safe) = sanitize_rel_path(&rel).or_else(|| if rel.is_empty() { Some("".to_string()) } else { None }) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
+    let dir_path = to_data_rel_path(&state.data_dir, &safe);
+    let mut out: Vec<FsEntry> = Vec::new();
+    let mut rd = match fs::read_dir(&dir_path).await {
+        Ok(rd) => rd,
+        Err(_) => return Json(out).into_response(),
+    };
+    while let Ok(Some(ent)) = rd.next_entry().await {
+        let name = ent.file_name().to_string_lossy().to_string();
+        let Ok(ft) = ent.file_type().await else { continue };
+        let mut size = None;
+        let mut modified_ms = None;
+        if let Ok(meta) = ent.metadata().await {
+            if meta.is_file() { size = Some(meta.len()); }
+            if let Ok(m) = meta.modified() {
+                if let Ok(dur) = m.duration_since(std::time::UNIX_EPOCH) {
+                    modified_ms = Some(dur.as_millis() as i64);
+                }
+            }
+        }
+        if ft.is_dir() {
+            out.push(FsEntry {
+                name: name.clone(),
+                path: if safe.is_empty() { name.clone() } else { format!("{}/{}", safe, name) },
+                is_dir: true,
+                size: None,
+                modified_ms,
+            });
+        } else if ft.is_file() {
+            if name.ends_with(".drawio") {
+                out.push(FsEntry {
+                    name: name.clone(),
+                    path: if safe.is_empty() { name.clone() } else { format!("{}/{}", safe, name) },
+                    is_dir: false,
+                    size,
+                    modified_ms,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.is_dir.cmp(&b.is_dir).reverse().then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    Json(out).into_response()
+}
+
+async fn api_get_file(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(path) = q.get("path") else { return (StatusCode::BAD_REQUEST, "missing path").into_response() };
+    let Some(safe) = sanitize_rel_path(path) else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() };
+    match ensure_room_loaded(&state, &safe).await {
+        Ok(room) => {
+            let content = room.content.read().await.clone();
+            let version = room.version.load(Ordering::SeqCst);
+            Json(FileContentResponse { name: safe, version, content }).into_response()
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn api_put_file(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    Json(req): Json<FileWriteRequest>,
+) -> impl IntoResponse {
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(path) = q.get("path") else { return (StatusCode::BAD_REQUEST, "missing path").into_response() };
+    let Some(safe) = sanitize_rel_path(path) else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() };
+    let pb = to_data_rel_path(&state.data_dir, &safe);
+    if let Some(parent) = pb.parent() {
+        let _ = fs::create_dir_all(parent).await;
+    }
+    let room = ensure_room_loaded(&state, &safe).await.map_err(|_| ()).ok();
+    if let Some(room) = room {
+        {
+            let mut guard = room.content.write().await;
+            *guard = req.content.clone();
+            room.version.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    if let Err(_) = fs::write(&pb, req.content.as_bytes()).await {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn api_delete_file(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(path) = q.get("path") else { return (StatusCode::BAD_REQUEST, "missing path").into_response() };
+    let Some(safe) = sanitize_rel_path(path) else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() };
+    let pb = to_data_rel_path(&state.data_dir, &safe);
+    if let Err(_) = fs::remove_file(&pb).await {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    state.rooms.remove(&safe);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn api_rename(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    Json(body): Json<RenameBody>,
+) -> impl IntoResponse {
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(from) = sanitize_rel_path(&body.from) else { return (StatusCode::BAD_REQUEST, "invalid from").into_response() };
+    let Some(to) = sanitize_rel_path(&body.to) else { return (StatusCode::BAD_REQUEST, "invalid to").into_response() };
+    if !to.ends_with(".drawio") {
+        return (StatusCode::BAD_REQUEST, "new name must end with .drawio").into_response();
+    }
+    let from_pb = to_data_rel_path(&state.data_dir, &from);
+    let to_pb = to_data_rel_path(&state.data_dir, &to);
+    if let Some(parent) = to_pb.parent() {
+        let _ = fs::create_dir_all(parent).await;
+    }
+    if let Err(_) = fs::rename(&from_pb, &to_pb).await {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    if let Some((_k, room)) = state.rooms.remove(&from) {
+        state.rooms.insert(to.clone(), room);
+    }
+    Json(serde_json::json!({ "path": to })).into_response()
+}
+
+async fn api_mkdir(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    Json(body): Json<MkdirBody>,
+) -> impl IntoResponse {
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(safe) = sanitize_rel_path(&body.path) else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() };
+    let pb = to_data_rel_path(&state.data_dir, &safe);
+    if let Err(_) = fs::create_dir_all(&pb).await {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn api_download(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(path) = q.get("path") else { return (StatusCode::BAD_REQUEST, "missing path").into_response() };
+    let Some(safe) = sanitize_rel_path(path) else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() };
+    let pb = to_data_rel_path(&state.data_dir, &safe);
+    let Ok(bytes) = fs::read(&pb).await else { return StatusCode::NOT_FOUND.into_response() };
+    let mut resp = Response::new(axum::body::Body::from(bytes));
+    resp.headers_mut().insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static("application/xml"));
+    let filename = safe.split('/').last().unwrap_or("diagram.drawio");
+    let cd = format!("attachment; filename=\"{}\"", filename);
+    if let Ok(val) = axum::http::HeaderValue::from_str(&cd) {
+        resp.headers_mut().insert(axum::http::header::CONTENT_DISPOSITION, val);
+    }
+    resp
+}
 

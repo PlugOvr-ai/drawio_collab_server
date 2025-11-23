@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Drawio Collaboration</title>
   <style>
-    html, body { height: 100%; margin: 0; background: #0b0c10; color: #e5e5e5; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
-    header { padding: 10px 12px; background: #1f2833; display: flex; align-items: center; justify-content: space-between; }
+    html, body { height: 100%; margin: 0; background: #ffffff; color: #111827; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    header { padding: 10px 12px; background: #f8fafc; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; }
     .row { display: flex; gap: 8px; align-items: center; }
-    .badge { padding: 2px 6px; border-radius: 100px; background: #233042; font-size: 12px; }
+    .badge { padding: 2px 6px; border-radius: 100px; background: #eef2ff; color: #1e3a8a; font-size: 12px; }
     #editor { width: 100%; height: calc(100% - 48px); border: 0; display: block; }
-    button, a { background: #0e1116; color: #e5e5e5; border: 1px solid #2f3742; border-radius: 8px; padding: 8px 10px; text-decoration: none; }
+    button, a { background: #ffffff; color: #111827; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; text-decoration: none; }
     #stage { position: relative; width: 100%; height: calc(100% - 48px); }
     #overlay { position: absolute; inset: 0; pointer-events: none; }
     .cursor {
@@ -27,20 +27,20 @@
     .cursor .label {
       position: absolute; top: 12px; left: 8px;
       padding: 2px 6px; font-size: 11px; border-radius: 6px;
-      background: rgba(0,0,0,0.6); color: white;
+      background: rgba(255,255,255,0.9); color: #111827; border: 1px solid #e5e7eb;
       white-space: nowrap;
     }
     .cursor .sel {
       position: absolute; top: -16px; left: 8px;
       padding: 1px 6px; font-size: 10px; border-radius: 6px;
-      background: rgba(0,0,0,0.6); color: #cbd5e1;
+      background: rgba(255,255,255,0.9); color: #374151; border: 1px solid #e5e7eb;
       white-space: nowrap;
       display: none;
     }
     .cursor .sel {
       position: absolute; top: -16px; left: 8px;
       padding: 1px 6px; font-size: 10px; border-radius: 6px;
-      background: rgba(0,0,0,0.6); color: #cbd5e1;
+      background: rgba(255,255,255,0.9); color: #374151; border: 1px solid #e5e7eb;
       white-space: nowrap;
     }
   </style>
@@ -64,8 +64,8 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const params = new URLSearchParams(location.search);
-    const fileName = params.get('name');
-    $('file').textContent = fileName || '(no file)';
+    const filePath = params.get('path') || params.get('name');
+    $('file').textContent = filePath || '(no file)';
     $('back').href = '/';
 
     let ws = null;
@@ -93,8 +93,8 @@
     }
 
     async function loadInitial() {
-      if (!fileName) return;
-      const resp = await fetch(`/files/${encodeURIComponent(fileName)}`, { credentials: 'include' });
+      if (!filePath) return;
+      const resp = await fetch(`/api/file?path=${encodeURIComponent(filePath)}`, { credentials: 'include' });
       if (!resp.ok) throw new Error(await resp.text());
       const meta = await resp.json();
       currentVersion = meta.version || 0;
@@ -107,9 +107,9 @@
     }
 
     function connectWS() {
-      if (!fileName) return;
+      if (!filePath) return;
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      ws = new WebSocket(`${proto}://${location.host}/ws/${encodeURIComponent(fileName)}`);
+      ws = new WebSocket(`${proto}://${location.host}/ws/_?path=${encodeURIComponent(filePath)}`);
       ws.onopen = () => { $('status').textContent = 'Connected'; };
       ws.onclose = () => { $('status').textContent = 'Disconnected'; };
       ws.onerror = () => { $('status').textContent = 'Error'; };
@@ -122,7 +122,7 @@
             lastXml = msg.content || '';
             if (msg.your_id) { myClientId = msg.your_id; }
             if (isEditorReady) {
-              postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: fileName });
+              postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: filePath });
             }
           } else if (msg.type === 'presence_snapshot') {
             for (const u of msg.users || []) {
@@ -157,7 +157,7 @@
               try {
                 postToEditor({ action: 'merge', xml: lastXml });
               } catch {
-                postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: fileName });
+                postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: filePath });
               }
             }
           }
@@ -233,7 +233,7 @@
         isEditorReady = true;
         // Load initial xml once editor is ready
         if (lastXml !== null) {
-          postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: fileName });
+          postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: filePath });
         }
         // Request event stream (selection/mouse) from embed
         try {
@@ -282,7 +282,7 @@
             ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
           }
           // Persist via HTTP
-          const resp = await fetch(`/files/${encodeURIComponent(fileName)}`, {
+          const resp = await fetch(`/api/file?path=${encodeURIComponent(filePath)}`, {
             method: 'PUT',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
@@ -317,7 +317,7 @@
                 selfUpdateToken++;
                 ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
               }
-              const resp = await fetch(`/files/${encodeURIComponent(fileName)}`, {
+              const resp = await fetch(`/api/file?path=${encodeURIComponent(filePath)}`, {
                 method: 'PUT',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },

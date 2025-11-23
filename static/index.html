@@ -5,78 +5,90 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>DrawioServer - Demo</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 0; background: #0b0c10; color: #e5e5e5; }
-    header { padding: 16px; background: #1f2833; display: flex; align-items: center; justify-content: space-between; }
-    main { padding: 16px; display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
-    .card { background: #16181d; border: 1px solid #2f3742; border-radius: 10px; padding: 12px; }
-    input, button, select, textarea { background: #0e1116; color: #e5e5e5; border: 1px solid #2f3742; border-radius: 8px; padding: 8px 10px; }
-    button { cursor: pointer; }
-    textarea { width: 100%; height: 60vh; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-    ul { list-style: none; padding-left: 0; }
-    li { margin-bottom: 8px; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
-    .row { display: flex; gap: 8px; align-items: center; }
-    .muted { color: #9aa4af; font-size: 12px; }
-    .badge { padding: 2px 6px; border-radius: 100px; background: #233042; font-size: 12px; }
-    .success { color: #56d364; }
-    .danger { color: #ff6b6b; }
-    .right { text-align: right; }
+    :root {
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --muted: #6b7280;     /* gray-500 */
+      --border: #e5e7eb;    /* gray-200 */
+      --accent: #2563eb;    /* blue-600 */
+      --text: #111827;      /* gray-900 */
+    }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; color: var(--text); background: var(--bg); }
+    .layout { display: grid; grid-template-columns: 260px 1fr; }
+    aside { height: 100vh; border-right: 1px solid var(--border); background: #f8fafc; padding: 16px 12px; position: sticky; top: 0; }
+    main { min-height: 100vh; background: #f9fafb; }
+    header.top { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid var(--border); background: #f8fafc; position: sticky; top: 0; z-index: 10; }
+    .app { padding: 16px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+    input, button, select, a.button { background: #ffffff; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+    button, a.button { cursor: pointer; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .nav { display: grid; gap: 8px; }
+    .nav a, .nav button { display: grid; grid-template-columns: 24px 1fr; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 8px; background: transparent; border: 1px solid transparent; color: var(--text); text-decoration: none; }
+    .nav a:hover, .nav button:hover { background: #f3f4f6; border-color: var(--border); }
+    .crumbs { display: flex; gap: 8px; align-items: center; }
+    .toolbar { display: flex; gap: 8px; align-items: center; }
+    table.files { width: 100%; border-collapse: collapse; }
+    table.files th, table.files td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    table.files th { color: var(--muted); font-weight: 600; text-align: left; background: #f3f4f6; position: sticky; top: 56px; }
+    table.files tr:hover { background: #f9fafb; }
+    .namecell { display: grid; grid-template-columns: 24px 1fr; align-items: center; gap: 8px; }
+    .icon { width: 16px; height: 16px; display: inline-block; border-radius: 3px; background: #9ca3af; }
+    .folder { background: #60a5fa; }
+    .file { background: #9ca3af; }
+    .row-actions { display: flex; gap: 8px; justify-content: flex-end; }
   </style>
 </head>
 <body>
-  <header>
-    <div class="row">
-      <strong>DrawioServer</strong>
-      <span class="badge" id="user-badge">guest</span>
-    </div>
-    <div class="row">
-      <input id="username" placeholder="display name" />
-      <button id="set-name">Set Name</button>
-      <button id="logout">Logout</button>
-    </div>
-  </header>
-  <main>
-    <section class="card">
-      <div class="row" style="justify-content: space-between;">
-        <strong>Files</strong>
-        <button id="refresh">Refresh</button>
+  <div class="layout">
+    <aside>
+      <div class="nav">
+        <a href="#" id="nav-root"><span class="icon folder"></span><span>My files</span></a>
+        <button id="nav-new-folder"><span class="icon folder"></span><span>New folder</span></button>
+        <button id="nav-new-file"><span class="icon file"></span><span>New file</span></button>
+        <a href="#" id="nav-settings"><span class="icon"></span><span>Settings</span></a>
+        <button id="nav-logout"><span class="icon"></span><span>Logout</span></button>
       </div>
-      <ul id="file-list"></ul>
-      <div class="row">
-        <input id="new-file-name" placeholder="new file name (ends with .drawio)" />
-        <button id="create-file">Create</button>
-      </div>
-      <p class="muted">Click a file to open and collaborate. This demo shows raw XML in a textarea.</p>
-    </section>
-    <section class="card">
-      <div class="row" style="justify-content: space-between;">
-        <div>
-          <strong id="open-file-name">No file</strong>
-          <span class="badge" id="version-badge">v0</span>
+      <div style="margin-top: 16px;" class="muted">File Browser</div>
+    </aside>
+    <main>
+      <header class="top">
+        <div class="crumbs" id="crumbs"></div>
+        <div class="toolbar">
+          <input id="username" placeholder="display name" />
+          <button id="set-name">Set name</button>
+          <input id="filter" placeholder="Search" />
+          <button id="refresh">Refresh</button>
+          <span class="muted" id="user-badge">guest</span>
         </div>
-        <div class="row">
-          <button id="save-http">Save (HTTP)</button>
-          <button id="close-ws">Close WS</button>
+      </header>
+      <div class="app">
+        <div class="card" style="overflow: auto;">
+          <table class="files" id="file-table">
+            <thead>
+              <tr>
+                <th style="width:50%;">Name</th>
+                <th style="width:20%;">Size</th>
+                <th style="width:30%;">Last modified</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="file-tbody"></tbody>
+          </table>
         </div>
       </div>
-      <textarea id="editor" placeholder="Open a .drawio file..."></textarea>
-      <div class="row right">
-        <span class="muted" id="status">Disconnected</span>
-      </div>
-    </section>
-  </main>
+    </main>
+  </div>
   <script>
     const $ = (id) => document.getElementById(id);
     const userBadge = $('user-badge');
     const statusEl = $('status');
     const versionBadge = $('version-badge');
-    const editor = $('editor');
-    const fileList = $('file-list');
-    const openFileName = $('open-file-name');
+    const crumbs = $('crumbs');
+    const fileBody = $('file-tbody');
 
-    let ws = null;
-    let currentFile = null;
-    let currentVersion = 0;
-    let typingTimer = null;
+    let cwd = '';
 
     async function fetchJSON(url, opts = {}) {
       const res = await fetch(url, { credentials: 'include', ...opts });
@@ -98,135 +110,200 @@
       }
     }
     async function refreshFiles() {
-      fileList.innerHTML = '';
+      fileBody.innerHTML = '';
       try {
-        const files = await fetchJSON('/files');
-        for (const f of files) {
-          const li = document.createElement('li');
-          const a = document.createElement('a');
-          a.href = '#';
-          a.textContent = f.name;
-          a.onclick = () => openFile(f.name);
-          const btn = document.createElement('button');
-          btn.textContent = 'Open';
-          btn.onclick = () => openFile(f.name);
-          const btn2 = document.createElement('a');
-          btn2.textContent = 'Open in draw.io';
-          btn2.href = `/drawio.html?name=${encodeURIComponent(f.name)}`;
-          btn2.style.padding = '6px 10px';
-          btn2.style.border = '1px solid #2f3742';
-          btn2.style.borderRadius = '8px';
-          btn2.style.textDecoration = 'none';
-          btn2.style.color = '#e5e5e5';
-          li.appendChild(a);
-          li.appendChild(btn);
-          li.appendChild(btn2);
-          fileList.appendChild(li);
+        updateBreadcrumbs();
+        const files = await fetchJSON('/api/list?path=' + encodeURIComponent(cwd));
+        const q = ($('filter')?.value || '').toLowerCase();
+        for (const f of files.filter(x => !q || x.name.toLowerCase().includes(q))) {
+          const tr = document.createElement('tr');
+          const tdName = document.createElement('td');
+          const tdSize = document.createElement('td');
+          const tdMod = document.createElement('td');
+          const tdAct = document.createElement('td');
+          const nameCell = document.createElement('div');
+          nameCell.className = 'namecell';
+          const dot = document.createElement('span');
+          dot.className = 'icon ' + (f.is_dir ? 'folder' : 'file');
+          const label = document.createElement('div');
+          label.textContent = f.name + (f.is_dir ? '/' : '');
+          label.style.whiteSpace = 'nowrap';
+          label.style.overflow = 'hidden';
+          label.style.textOverflow = 'ellipsis';
+          nameCell.appendChild(dot);
+          nameCell.appendChild(label);
+          tdName.appendChild(nameCell);
+          tdName.style.cursor = 'pointer';
+          tdName.onclick = () => {
+            if (f.is_dir) {
+              cwd = f.path;
+              refreshFiles();
+            } else {
+              window.location.href = `/drawio.html?path=${encodeURIComponent(f.path)}`;
+            }
+          };
+          tdSize.textContent = f.is_dir ? '–' : formatSize(f.size || 0);
+          tdMod.textContent = f.modified_ms ? formatRelative(f.modified_ms) : '–';
+          const actions = document.createElement('div');
+          actions.className = 'row-actions';
+          const btnOpen = document.createElement('a');
+          btnOpen.className = 'button';
+          btnOpen.textContent = 'Open';
+          btnOpen.href = f.is_dir ? '#' : `/drawio.html?path=${encodeURIComponent(f.path)}`;
+          btnOpen.onclick = (ev) => { if (f.is_dir) { ev.preventDefault(); cwd = f.path; refreshFiles(); } };
+          const btnDownload = document.createElement('a');
+          btnDownload.className = 'button';
+          btnDownload.textContent = 'Download';
+          btnDownload.href = `/api/download?path=${encodeURIComponent(f.path)}`;
+          btnDownload.style.display = f.is_dir ? 'none' : 'inline-block';
+          const btnRename = document.createElement('button');
+          btnRename.textContent = 'Rename';
+          btnRename.onclick = async () => {
+            const newName = prompt('Rename to:', f.name);
+            if (!newName || newName === f.name) return;
+            if (!f.is_dir && !newName.endsWith('.drawio')) return alert('Name must end with .drawio');
+            try {
+              const res = await fetch(`/api/rename`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ from: f.path, to: (cwd ? (cwd + '/' + newName) : newName) }),
+              });
+              if (!res.ok) throw new Error(await res.text());
+              await refreshFiles();
+            } catch (e) { alert(e.message); }
+          };
+          const btnDelete = document.createElement('button');
+          btnDelete.textContent = 'Delete';
+          btnDelete.onclick = async () => {
+            if (!confirm(`Delete ${f.name}${f.is_dir ? ' (folders must be empty)' : ''}?`)) return;
+            try {
+              if (f.is_dir) {
+                alert('Folder deletion not implemented yet');
+                return;
+              }
+              const res = await fetch(`/api/file?path=${encodeURIComponent(f.path)}`, {
+                method: 'DELETE',
+                credentials: 'include',
+              });
+              if (!res.ok) throw new Error(await res.text());
+              await refreshFiles();
+            } catch (e) { alert(e.message); }
+          };
+          actions.appendChild(btnOpen);
+          actions.appendChild(btnDownload);
+          actions.appendChild(btnRename);
+          actions.appendChild(btnDelete);
+          tdAct.appendChild(actions);
+          tr.appendChild(tdName);
+          tr.appendChild(tdSize);
+          tr.appendChild(tdMod);
+          tr.appendChild(tdAct);
+          fileBody.appendChild(tr);
         }
       } catch (e) {
         console.error(e);
       }
     }
 
-    $('set-name').onclick = async () => {
-      const username = $('username').value.trim();
-      if (!username) return alert('enter a display name');
-      try {
-        const res = await fetch('/me?token=' + (new URLSearchParams(location.search).get('token') || ''), {
-          method: 'PUT',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username }),
-        });
-        if (!res.ok) throw new Error(await res.text());
-        await refreshMe();
-      } catch (e) { alert(e.message); }
-    };
-    $('logout').onclick = async () => {
-      await fetch('/logout', { method: 'POST', credentials: 'include' });
-      await refreshMe();
-    };
-    $('refresh').onclick = refreshFiles;
-    $('create-file').onclick = async () => {
-      const name = $('new-file-name').value.trim();
-      if (!name || !name.endsWith('.drawio')) return alert('name must end with .drawio');
-      try {
-        await fetch(`/files/${encodeURIComponent(name)}`, {
-          method: 'PUT',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: '' }),
-        });
-        $('new-file-name').value = '';
-        await refreshFiles();
-        openFile(name);
-      } catch (e) { alert(e.message); }
-    };
-
-    async function openFile(name) {
-      if (ws) { try { ws.close(); } catch {} ws = null; }
-      currentFile = name;
-      openFileName.textContent = name;
-      statusEl.textContent = 'Loading...';
-      try {
-        const meta = await fetchJSON(`/files/${encodeURIComponent(name)}`);
-        editor.value = meta.content;
-        currentVersion = meta.version;
-        versionBadge.textContent = 'v' + currentVersion;
-      } catch (e) { console.error(e); }
-      connectWS(name);
-    }
-
-    function connectWS(name) {
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      ws = new WebSocket(`${proto}://${location.host}/ws/${encodeURIComponent(name)}`);
-      ws.onopen = () => statusEl.textContent = 'Connected';
-      ws.onclose = () => statusEl.textContent = 'Disconnected';
-      ws.onerror = () => statusEl.textContent = 'Error';
-      ws.onmessage = (ev) => {
+    const setNameBtn = $('set-name');
+    if (setNameBtn) {
+      setNameBtn.onclick = async () => {
+        const nameInput = $('username');
+        let username = nameInput ? nameInput.value.trim() : (prompt('Enter display name:') || '').trim();
+        if (!username) return alert('enter a display name');
         try {
-          const msg = JSON.parse(ev.data);
-          if (msg.type === 'init') {
-            editor.value = msg.content;
-            currentVersion = msg.version;
-            versionBadge.textContent = 'v' + currentVersion;
-          } else if (msg.type === 'update') {
-            if (document.activeElement !== editor) {
-              editor.value = msg.content;
-            }
-            currentVersion = msg.version;
-            versionBadge.textContent = 'v' + currentVersion;
-          }
-        } catch (e) {
-          console.error('bad msg', e, ev.data);
-        }
+          const res = await fetch('/me?token=' + (new URLSearchParams(location.search).get('token') || ''), {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username }),
+          });
+          if (!res.ok) throw new Error(await res.text());
+          await refreshMe();
+        } catch (e) { alert(e.message); }
       };
     }
-    $('close-ws').onclick = () => { if (ws) ws.close(); ws = null; };
-
-    $('save-http').onclick = async () => {
-      if (!currentFile) return;
-      try {
-        await fetch(`/files/${encodeURIComponent(currentFile)}`, {
-          method: 'PUT',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: editor.value }),
-        });
-      } catch (e) { alert(e.message); }
+    $('logout')?.addEventListener('click', async () => {
+      await fetch('/logout', { method: 'POST', credentials: 'include' });
+      await refreshMe();
+    });
+    $('refresh').onclick = refreshFiles;
+    $('nav-root').onclick = (e) => { e.preventDefault(); cwd = ''; refreshFiles(); };
+    $('nav-new-folder').onclick = async () => {
+      const name = prompt('Folder name:');
+      if (!name) return;
+      const full = cwd ? (cwd + '/' + name) : name;
+      const res = await fetch('/api/mkdir', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: full }) });
+      if (!res.ok) return alert(await res.text());
+      refreshFiles();
+    };
+    $('nav-new-file').onclick = async () => {
+      const name = prompt('New diagram name (ends with .drawio):');
+      if (!name || !name.endsWith('.drawio')) return;
+      const full = cwd ? (cwd + '/' + name) : name;
+      const content = getTemplateXml('blank');
+      const res = await fetch(`/api/file?path=${encodeURIComponent(full)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) });
+      if (!res.ok) return alert(await res.text());
+      refreshFiles();
     };
 
-    editor.addEventListener('input', () => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      if (typingTimer) clearTimeout(typingTimer);
-      typingTimer = setTimeout(() => {
-        const msg = { type: 'replace', version: currentVersion, content: editor.value };
-        ws.send(JSON.stringify(msg));
-      }, 300);
-    });
+    function updateBreadcrumbs() {
+      const parts = cwd ? cwd.split('/') : [];
+      crumbs.innerHTML = '';
+      const root = document.createElement('a');
+      root.href = '#';
+      root.textContent = 'root';
+      root.onclick = () => { cwd = ''; refreshFiles(); };
+      crumbs.appendChild(root);
+      let pathAcc = '';
+      for (const p of parts) {
+        const sep = document.createElement('span');
+        sep.textContent = ' / ';
+        crumbs.appendChild(sep);
+        pathAcc = pathAcc ? (pathAcc + '/' + p) : p;
+        const a = document.createElement('a');
+        a.href = '#';
+        a.textContent = p;
+        a.onclick = () => { cwd = pathAcc; refreshFiles(); };
+        crumbs.appendChild(a);
+      }
+    }
+
+    function formatSize(n) {
+      const units = ['B','KB','MB','GB','TB'];
+      let i = 0; let x = n;
+      while (x >= 1024 && i < units.length - 1) { x /= 1024; i++; }
+      return (i === 0 ? x : x.toFixed(2)) + ' ' + units[i];
+    }
+    function formatRelative(ms) {
+      const now = Date.now();
+      const d = Math.max(0, now - ms);
+      const s = Math.floor(d / 1000);
+      if (s < 60) return 'just now';
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m} minute${m===1?'':'s'} ago`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h} hour${h===1?'':'s'} ago`;
+      const days = Math.floor(h / 24);
+      return `${days} day${days===1?'':'s'} ago`;
+    }
+    function getTemplateXml(kind) {
+      if (kind === 'flow') {
+        return '<?xml version="1.0" encoding="UTF-8"?><mxfile><diagram name="Page-1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" value="Start" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1"><mxGeometry x="120" y="80" width="80" height="80" as="geometry"/></mxCell><mxCell id="3" value="Process" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="260" y="80" width="120" height="60" as="geometry"/></mxCell><mxCell id="4" edge="1" parent="1" source="2" target="3"><mxGeometry relative="1" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>';
+      }
+      return '<?xml version="1.0" encoding="UTF-8"?><mxfile><diagram name="Page-1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
+    }
 
     refreshMe();
     refreshFiles();
+    // load viewer script for previews
+    (function loadViewer(){
+      const s = document.createElement('script');
+      s.src = 'https://viewer.diagrams.net/js/viewer.min.js';
+      s.async = true;
+      document.body.appendChild(s);
+    })();
   </script>
 </body>
 </html>
