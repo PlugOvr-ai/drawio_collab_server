@@ -29,9 +29,8 @@
       <span class="badge" id="user-badge">guest</span>
     </div>
     <div class="row">
-      <input id="username" placeholder="username" />
-      <input id="password" placeholder="password" type="password" />
-      <button id="login">Login</button>
+      <input id="username" placeholder="display name" />
+      <button id="set-name">Set Name</button>
       <button id="logout">Logout</button>
     </div>
   </header>
@@ -129,17 +128,17 @@
       }
     }
 
-    $('login').onclick = async () => {
+    $('set-name').onclick = async () => {
       const username = $('username').value.trim();
-      const password = $('password').value.trim();
-      if (!username || !password) return alert('enter username/password');
+      if (!username) return alert('enter a display name');
       try {
-        await fetch('/login', {
-          method: 'POST',
+        const res = await fetch('/me?token=' + (new URLSearchParams(location.search).get('token') || ''), {
+          method: 'PUT',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password }),
+          body: JSON.stringify({ username }),
         });
+        if (!res.ok) throw new Error(await res.text());
         await refreshMe();
       } catch (e) { alert(e.message); }
     };

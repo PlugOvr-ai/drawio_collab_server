@@ -13,8 +13,8 @@ use axum::{
         Path as AxumPath, Query, State,
     },
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
-    routing::{get, post, put},
+    response::{IntoResponse, Response, Redirect},
+    routing::{get, post, put, get_service},
     Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
@@ -31,12 +31,15 @@ use tokio_stream::wrappers::BroadcastStream;
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use tracing::{error, info, Level};
 use uuid::Uuid;
+use clap::Parser;
 
 #[derive(Clone)]
 struct AppState {
     sessions: Arc<DashMap<String, String>>, // session_id -> username
     rooms: Arc<DashMap<String, Arc<Room>>>, // file_key -> room
     data_dir: Arc<PathBuf>,
+    auth_token: String,
+    require_token: bool,
 }
 
 struct Room {
@@ -87,6 +90,11 @@ struct LoginResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct SetNameRequest {
+    username: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct FileWriteRequest {
     content: String,
 }
@@ -103,43 +111,76 @@ struct FileListItem {
     name: String,
 }
 
+#[derive(Parser, Debug)]
+#[command(name = "drawioserver")]
+#[command(about = "Axum server for collaborative draw.io editing")]
+struct Args {
+    /// Require token for all file operations (like Jupyter). Also disables /login.
+    #[arg(long, env = "DRAWIO_REQUIRE_TOKEN", default_value_t = false)]
+    require_token: bool,
+
+    /// Token value; if not provided, a random token is generated at startup
+    #[arg(long, env = "DRAWIO_TOKEN")]
+    token: Option<String>,
+
+    /// Port to listen on
+    #[arg(long, env = "PORT", default_value_t = 3000)]
+    port: u16,
+
+    /// Directory to store .drawio files
+    #[arg(long, default_value = "data")]
+    data_dir: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
 
-    let data_dir = PathBuf::from("data");
+    let args = Args::parse();
+
+    let data_dir = args.data_dir.clone();
     if !data_dir.exists() {
         fs::create_dir_all(&data_dir).await?;
     }
+
+    let auth_token = args.token.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let require_token = args.require_token;
 
     let state = AppState {
         sessions: Arc::new(DashMap::new()),
         rooms: Arc::new(DashMap::new()),
         data_dir: Arc::new(data_dir),
+        auth_token,
+        require_token,
     };
 
     let app = Router::new()
+        .route("/", get(root_page))
         .route("/healthz", get(health))
         .route("/login", post(login))
         .route("/logout", post(logout))
-        .route("/me", get(me))
+        .route("/auth/token", get(token_login))
+    .route("/me", get(me).put(put_me))
         .route("/files", get(list_files))
         .route("/files/:name", get(get_file).put(put_file))
         .route("/raw/:name", get(get_raw_file))
         .route("/ws/:name", get(ws_handler))
-        .nest_service("/", ServeDir::new("static"))
+        .fallback_service(
+            get_service(ServeDir::new("static")).handle_error(|_err| async move {
+                (StatusCode::INTERNAL_SERVER_ERROR, "static file error")
+            }),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(
             CorsLayer::very_permissive(), // simplify testing; tighten for production
         )
-        .with_state(state);
+        .with_state(state.clone());
 
-    let port = std::env::var("PORT")
-        .ok()
-        .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(3000);
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     info!("listening on http://{addr}");
+    info!("require_token: {}", state.require_token);
+    info!("token login: http://localhost:{}/auth/token?token={}", args.port, state.auth_token);
+    info!("Set DRAWIO_TOKEN/--token to control the token. Current token: {}", state.auth_token);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -160,9 +201,61 @@ async fn health() -> &'static str {
 
 // ----- Auth helpers -----
 
+async fn root_page(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if state.require_token {
+        if get_authorized_user_from_header_or_query(&state, &headers, &q, &jar).is_none() {
+            return Redirect::to("/token.html").into_response();
+        }
+    }
+    // serve static index.html
+    let bytes = match fs::read("static/index.html").await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let mut resp = Response::new(axum::body::Body::from(bytes));
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    resp
+}
+
 fn get_session_user(state: &AppState, jar: &CookieJar) -> Option<String> {
     let sid = jar.get("sid")?.value().to_string();
     state.sessions.get(&sid).map(|e| e.value().clone())
+}
+
+fn get_authorized_user_from_header_or_query(
+    state: &AppState,
+    headers: &HeaderMap,
+    query: &std::collections::HashMap<String, String>,
+    jar: &CookieJar,
+) -> Option<String> {
+    // Session cookie
+    if let Some(u) = get_session_user(state, jar) {
+        return Some(u);
+    }
+    // Header: Authorization: token <TOKEN>
+    if let Some(auth) = headers.get(axum::http::header::AUTHORIZATION).and_then(|h| h.to_str().ok()) {
+        let prefix = "token ";
+        if let Some(rest) = auth.strip_prefix(prefix) {
+            if rest.trim() == state.auth_token {
+                return Some("token".to_string());
+            }
+        }
+    }
+    // Query param ?token=...
+    if let Some(t) = query.get("token") {
+        if t == &state.auth_token {
+            return Some("token".to_string());
+        }
+    }
+    None
 }
 
 fn set_session_user<'a>(state: &AppState, mut jar: CookieJar, username: &str) -> CookieJar {
@@ -195,15 +288,8 @@ async fn login(
     jar: CookieJar,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    if req.username.trim().is_empty() || req.password.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "username and password required").into_response();
-    }
-    // For MVP: accept any username/password pair. Replace with real verification if needed.
-    let jar = set_session_user(&state, jar, &req.username);
-    let resp = Json(LoginResponse {
-        username: req.username,
-    });
-    (jar, resp).into_response()
+    // Password login removed. Always disabled.
+    (StatusCode::FORBIDDEN, "password login disabled; use token and PUT /me to set name").into_response()
 }
 
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
@@ -217,6 +303,48 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse 
     } else {
         StatusCode::UNAUTHORIZED.into_response()
     }
+}
+
+async fn put_me(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    Json(req): Json<SetNameRequest>,
+) -> impl IntoResponse {
+    // Require authorization via token or existing session
+    if get_authorized_user_from_header_or_query(&state, &headers, &q, &jar).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let name = req.username.trim();
+    if name.is_empty() || name.len() > 64 {
+        return (StatusCode::BAD_REQUEST, "invalid name").into_response();
+    }
+    // If the caller already has a session, update it; otherwise create one
+    if let Some(_existing) = get_session_user(&state, &jar) {
+        // Update existing session by re-issuing cookie with new name
+        let jar = set_session_user(&state, jar, name);
+        (jar, Json(LoginResponse { username: name.to_string() })).into_response()
+    } else {
+        // No session cookie present (e.g., used Authorization header). Create one.
+        let jar = set_session_user(&state, jar, name);
+        (jar, Json(LoginResponse { username: name.to_string() })).into_response()
+    }
+}
+
+// Token login like Jupyter's: /auth/token?token=...
+async fn token_login(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(token) = params.get("token") {
+        if token == &state.auth_token {
+            let jar = set_session_user(&state, jar, "token");
+            return (jar, Redirect::to("/")).into_response();
+        }
+    }
+    StatusCode::UNAUTHORIZED.into_response()
 }
 
 // ----- File helpers -----
@@ -280,7 +408,17 @@ async fn ensure_room_loaded(state: &AppState, file_key: &str) -> anyhow::Result<
 
 // ----- Routes: Files -----
 
-async fn list_files(State(state): State<AppState>) -> impl IntoResponse {
+async fn list_files(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if state.require_token {
+        if get_authorized_user_from_header_or_query(&state, &headers, &q, &jar).is_none() {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
     let mut items = Vec::<FileListItem>::new();
     let mut rd = match fs::read_dir(&*state.data_dir).await {
         Ok(rd) => rd,
@@ -304,8 +442,16 @@ async fn list_files(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn get_file(
     State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
     AxumPath(name): AxumPath<String>,
 ) -> impl IntoResponse {
+    if state.require_token {
+        if get_authorized_user_from_header_or_query(&state, &headers, &q, &jar).is_none() {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
     let decoded = percent_decode_str(&name).decode_utf8_lossy().to_string();
     let Some(file_key) = to_file_key(&decoded) else {
         return (StatusCode::BAD_REQUEST, "invalid file name").into_response();
@@ -331,10 +477,12 @@ async fn get_file(
 async fn put_file(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
     AxumPath(name): AxumPath<String>,
     Json(req): Json<FileWriteRequest>,
 ) -> impl IntoResponse {
-    let Some(_username) = get_session_user(&state, &jar) else {
+    let Some(_username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
 
@@ -367,8 +515,16 @@ async fn put_file(
 
 async fn get_raw_file(
     State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
     AxumPath(name): AxumPath<String>,
 ) -> impl IntoResponse {
+    if state.require_token {
+        if get_authorized_user_from_header_or_query(&state, &headers, &q, &jar).is_none() {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
     let decoded = percent_decode_str(&name).decode_utf8_lossy().to_string();
     let Some(file_key) = to_file_key(&decoded) else {
         return (StatusCode::BAD_REQUEST, "invalid file name").into_response();
@@ -395,9 +551,9 @@ async fn ws_handler(
     AxumPath(name): AxumPath<String>,
     ws: WebSocketUpgrade,
     headers: HeaderMap,
-    Query(_q): Query<std::collections::HashMap<String, String>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let Some(username) = get_session_user(&state, &jar) else {
+    let Some(username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return (StatusCode::UNAUTHORIZED, "login required").into_response();
     };
     let decoded = percent_decode_str(&name).decode_utf8_lossy().to_string();
