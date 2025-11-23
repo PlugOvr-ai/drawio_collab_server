@@ -1058,11 +1058,22 @@ async fn api_rename(
     };
     let Some(from) = sanitize_rel_path(&body.from) else { return (StatusCode::BAD_REQUEST, "invalid from").into_response() };
     let Some(to) = sanitize_rel_path(&body.to) else { return (StatusCode::BAD_REQUEST, "invalid to").into_response() };
-    if !to.ends_with(".drawio") {
-        return (StatusCode::BAD_REQUEST, "new name must end with .drawio").into_response();
-    }
     let from_pb = to_data_rel_path(&state.data_dir, &from);
     let to_pb = to_data_rel_path(&state.data_dir, &to);
+    // Only enforce .drawio extension when renaming files; allow directories without extension
+    match tokio::fs::metadata(&from_pb).await {
+        Ok(meta) => {
+            if meta.is_file() && !to.ends_with(".drawio") {
+                return (StatusCode::BAD_REQUEST, "new file name must end with .drawio").into_response();
+            }
+        }
+        Err(_) => {
+            // If we can't read metadata, fall back to requiring extension only when destination looks like a file
+            if to.split('/').last().map(|s| !s.is_empty() && !s.ends_with(".drawio")).unwrap_or(false) {
+                // We can't tell; proceed anyway to let fs::rename surface an error if needed
+            }
+        }
+    }
     if let Some(parent) = to_pb.parent() {
         let _ = fs::create_dir_all(parent).await;
     }

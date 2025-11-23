@@ -27,7 +27,7 @@
     .nav { display: grid; gap: 8px; }
     .nav a, .nav button { display: grid; grid-template-columns: 24px 1fr; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 8px; background: transparent; border: 1px solid transparent; color: var(--text); text-decoration: none; }
     .nav a:hover, .nav button:hover { background: #f3f4f6; border-color: var(--border); }
-    .crumbs { display: flex; gap: 8px; align-items: center; }
+    .crumbs { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .toolbar { display: flex; gap: 8px; align-items: center; }
     table.files { width: 100%; border-collapse: collapse; }
     table.files th, table.files td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
@@ -254,17 +254,16 @@
       const root = document.createElement('a');
       root.href = '#';
       root.textContent = 'root';
+      root.className = 'button';
       root.onclick = () => { cwd = ''; refreshFiles(); };
       crumbs.appendChild(root);
       let pathAcc = '';
       for (const p of parts) {
-        const sep = document.createElement('span');
-        sep.textContent = ' / ';
-        crumbs.appendChild(sep);
         pathAcc = pathAcc ? (pathAcc + '/' + p) : p;
         const a = document.createElement('a');
         a.href = '#';
         a.textContent = p;
+        a.className = 'button';
         const jump = pathAcc;
         a.onclick = (e) => { e.preventDefault(); cwd = jump; refreshFiles(); };
         crumbs.appendChild(a);
