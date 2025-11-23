@@ -409,7 +409,7 @@ fn sanitize_rel_path(path: &str) -> Option<String> {
         }
         let valid = part
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' ));
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ' | '(' | ')' | '+' | ',' ));
         if !valid {
             return None;
         }
@@ -912,18 +912,21 @@ async fn api_list(
     };
     while let Ok(Some(ent)) = rd.next_entry().await {
         let name = ent.file_name().to_string_lossy().to_string();
-        let Ok(ft) = ent.file_type().await else { continue };
+        let meta = match ent.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
         let mut size = None;
         let mut modified_ms = None;
-        if let Ok(meta) = ent.metadata().await {
-            if meta.is_file() { size = Some(meta.len()); }
-            if let Ok(m) = meta.modified() {
-                if let Ok(dur) = m.duration_since(std::time::UNIX_EPOCH) {
-                    modified_ms = Some(dur.as_millis() as i64);
-                }
+        if meta.is_file() {
+            size = Some(meta.len());
+        }
+        if let Ok(m) = meta.modified() {
+            if let Ok(dur) = m.duration_since(std::time::UNIX_EPOCH) {
+                modified_ms = Some(dur.as_millis() as i64);
             }
         }
-        if ft.is_dir() {
+        if meta.is_dir() {
             out.push(FsEntry {
                 name: name.clone(),
                 path: if safe.is_empty() { name.clone() } else { format!("{}/{}", safe, name) },
@@ -931,7 +934,7 @@ async fn api_list(
                 size: None,
                 modified_ms,
             });
-        } else if ft.is_file() {
+        } else if meta.is_file() {
             if name.ends_with(".drawio") {
                 out.push(FsEntry {
                     name: name.clone(),
@@ -940,6 +943,32 @@ async fn api_list(
                     size,
                     modified_ms,
                 });
+            }
+        } else {
+            // symlink or other: try to resolve to target type
+            if let Ok(ft) = ent.file_type().await {
+                if ft.is_symlink() {
+                    // attempt read_link -> metadata
+                    if let Ok(target_meta) = tokio::fs::metadata(ent.path()).await {
+                        if target_meta.is_dir() {
+                            out.push(FsEntry {
+                                name: name.clone(),
+                                path: if safe.is_empty() { name.clone() } else { format!("{}/{}", safe, name) },
+                                is_dir: true,
+                                size: None,
+                                modified_ms,
+                            });
+                        } else if target_meta.is_file() && name.ends_with(".drawio") {
+                            out.push(FsEntry {
+                                name: name.clone(),
+                                path: if safe.is_empty() { name.clone() } else { format!("{}/{}", safe, name) },
+                                is_dir: false,
+                                size,
+                                modified_ms,
+                            });
+                        }
+                    }
+                }
             }
         }
     }
