@@ -17,18 +17,23 @@
     async function submitToken(e) {
       e?.preventDefault();
       const token = document.getElementById('token').value.trim();
+      const name = (document.getElementById('displayName')?.value || '').trim();
       const err = document.getElementById('err');
       err.textContent = '';
       if (!token) { err.textContent = 'Enter token'; return; }
       try {
         const resp = await fetch('/auth/token?token=' + encodeURIComponent(token), { redirect: 'follow', credentials: 'include' });
-        if (resp.redirected) {
-          location.href = resp.url;
-          return;
-        }
-        if (!resp.ok) {
+        if (!resp.ok && !resp.redirected) {
           err.textContent = 'Invalid token';
           return;
+        }
+        if (name) {
+          await fetch('/me', {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: name }),
+          }).catch(() => {});
         }
         // If not redirected, go home
         location.href = '/';
@@ -51,6 +56,8 @@
   <div class="card">
     <h1>Enter Access Token</h1>
     <p>Paste the server token provided by your administrator to continue.</p>
+    <label class="muted">Display name</label>
+    <input id="displayName" placeholder="display name" />
     <form id="form">
       <input id="token" placeholder="Token" autocomplete="off" autofocus />
       <button id="go" type="submit">Continue</button>

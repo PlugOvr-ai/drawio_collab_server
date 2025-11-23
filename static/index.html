@@ -25,8 +25,23 @@
     button, a.button { cursor: pointer; }
     .muted { color: var(--muted); font-size: 12px; }
     .nav { display: grid; gap: 8px; }
-    .nav a, .nav button { display: grid; grid-template-columns: 24px 1fr; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 8px; background: transparent; border: 1px solid transparent; color: var(--text); text-decoration: none; }
+    .nav a, .nav button {
+      display: grid;
+      grid-template-columns: 24px 1fr;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text);
+      text-decoration: none;
+      width: 100%;
+      text-align: left;
+      font: inherit;
+    }
     .nav a:hover, .nav button:hover { background: #f3f4f6; border-color: var(--border); }
+    .nav a:active, .nav button:active { border-color: var(--accent); }
     .crumbs { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .toolbar { display: flex; gap: 8px; align-items: center; }
     table.files { width: 100%; border-collapse: collapse; }
@@ -34,10 +49,24 @@
     table.files th { color: var(--muted); font-weight: 600; text-align: left; background: #f3f4f6; position: sticky; top: 0; z-index: 2; box-shadow: 0 1px 0 var(--border); }
     table.files tr:hover { background: #f9fafb; }
     .namecell { display: grid; grid-template-columns: 24px 1fr; align-items: center; gap: 8px; }
-    .icon { width: 16px; height: 16px; display: inline-block; border-radius: 3px; background: #9ca3af; }
+    .icon { width: 16px; height: 16px; display: inline-block; border-radius: 3px; background: #9ca3af; justify-self: center; }
     .folder { background: #60a5fa; }
     .file { background: #9ca3af; }
+    .gear { background: #93c5fd; }
     .row-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    /* Uniform action button look */
+    .row-actions a, .row-actions button {
+      background: #ffffff;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 12px;
+      text-decoration: none;
+      font: inherit;
+    }
+    .row-actions a:hover, .row-actions button:hover {
+      background: #f3f4f6;
+    }
   </style>
 </head>
 <body>
@@ -47,20 +76,18 @@
         <a href="#" id="nav-root"><span class="icon folder"></span><span>My files</span></a>
         <button id="nav-new-folder"><span class="icon folder"></span><span>New folder</span></button>
         <button id="nav-new-file"><span class="icon file"></span><span>New file</span></button>
-        <a href="#" id="nav-settings"><span class="icon"></span><span>Settings</span></a>
-        <button id="nav-logout"><span class="icon"></span><span>Logout</span></button>
+        <button id="nav-settings"><span class="icon gear"></span><span>Settings</span></button>
+
       </div>
-      <div style="margin-top: 16px;" class="muted">File Browser</div>
+
     </aside>
     <main>
       <header class="top">
         <div class="crumbs" id="crumbs"></div>
         <div class="toolbar">
-          <input id="username" placeholder="display name" />
-          <button id="set-name">Set name</button>
           <input id="filter" placeholder="Search" />
           <button id="refresh">Refresh</button>
-          <span class="muted" id="user-badge">guest</span>
+          <span class="muted" id="greeting">Hello, guest</span>
         </div>
       </header>
       <div class="app">
@@ -80,9 +107,22 @@
       </div>
     </main>
   </div>
+  <!-- Settings modal -->
+  <div id="settings-backdrop" style="display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 40;"></div>
+  <div id="settings-modal" class="card" style="display:none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(440px, 92vw); padding: 16px; z-index: 50;">
+    <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <strong>Settings</strong>
+      <button id="settings-close">Close</button>
+    </div>
+    <div style="display:grid; gap:8px;">
+      <label class="muted">Display name</label>
+      <input id="settings-name" placeholder="display name" />
+      <button id="settings-save">Save</button>
+    </div>
+  </div>
   <script>
     const $ = (id) => document.getElementById(id);
-    const userBadge = $('user-badge');
+    const greeting = $('greeting');
     const statusEl = $('status');
     const versionBadge = $('version-badge');
     const crumbs = $('crumbs');
@@ -104,9 +144,9 @@
     async function refreshMe() {
       try {
         const me = await fetchJSON('/me');
-        userBadge.textContent = me.username;
+        greeting.textContent = 'Hello, ' + me.username;
       } catch {
-        userBadge.textContent = 'guest';
+        greeting.textContent = 'Hello, guest';
       }
     }
     async function refreshFiles() {
@@ -206,24 +246,42 @@
       }
     }
 
-    const setNameBtn = $('set-name');
-    if (setNameBtn) {
-      setNameBtn.onclick = async () => {
-        const nameInput = $('username');
-        let username = nameInput ? nameInput.value.trim() : (prompt('Enter display name:') || '').trim();
-        if (!username) return alert('enter a display name');
-        try {
-          const res = await fetch('/me?token=' + (new URLSearchParams(location.search).get('token') || ''), {
-            method: 'PUT',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username }),
-          });
-          if (!res.ok) throw new Error(await res.text());
-          await refreshMe();
-        } catch (e) { alert(e.message); }
-      };
+    // Settings modal open/close/save
+    const settingsBtn = $('nav-settings');
+    const settingsModal = $('settings-modal');
+    const settingsBackdrop = $('settings-backdrop');
+    const settingsClose = $('settings-close');
+    const settingsSave = $('settings-save');
+    const settingsName = $('settings-name');
+    function openSettings() {
+      settingsModal.style.display = 'block';
+      settingsBackdrop.style.display = 'block';
+      const current = (greeting.textContent || '').replace(/^Hello,\s*/, '') || 'guest';
+      settingsName.value = current === 'guest' ? '' : current;
+      settingsName.focus();
     }
+    function closeSettings() {
+      settingsModal.style.display = 'none';
+      settingsBackdrop.style.display = 'none';
+    }
+    if (settingsBtn) settingsBtn.onclick = (e) => { e.preventDefault(); openSettings(); };
+    if (settingsBackdrop) settingsBackdrop.onclick = closeSettings;
+    if (settingsClose) settingsClose.onclick = closeSettings;
+    if (settingsSave) settingsSave.onclick = async () => {
+      const username = settingsName.value.trim();
+      if (!username) return alert('enter a display name');
+      try {
+        const res = await fetch('/me?token=' + (new URLSearchParams(location.search).get('token') || ''), {
+          method: 'PUT',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        await refreshMe();
+        closeSettings();
+      } catch (e) { alert(e.message); }
+    };
     $('logout')?.addEventListener('click', async () => {
       await fetch('/logout', { method: 'POST', credentials: 'include' });
       await refreshMe();
