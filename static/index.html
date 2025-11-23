@@ -265,7 +265,8 @@
         const a = document.createElement('a');
         a.href = '#';
         a.textContent = p;
-        a.onclick = () => { cwd = pathAcc; refreshFiles(); };
+        const jump = pathAcc;
+        a.onclick = (e) => { e.preventDefault(); cwd = jump; refreshFiles(); };
         crumbs.appendChild(a);
       }
     }
