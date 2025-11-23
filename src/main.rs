@@ -10,7 +10,7 @@ use std::{
 use axum::{
     extract::{
         ws::{Message as WsRawMessage, WebSocket, WebSocketUpgrade},
-        Path as AxumPath, Query, State,
+        Path as AxumPath, Query, State, Multipart,
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response, Redirect},
@@ -210,6 +210,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/rename", post(api_rename))
         .route("/api/mkdir", post(api_mkdir))
         .route("/api/download", get(api_download))
+        .route("/api/upload", post(api_upload))
         .route("/api/ai_modify", post(api_ai_modify))
         .route("/raw/:name", get(get_raw_file))
         .route("/ws/:name", get(ws_handler))
@@ -1144,6 +1145,170 @@ async fn api_download(
         resp.headers_mut().insert(axum::http::header::CONTENT_DISPOSITION, val);
     }
     resp
+}
+
+async fn api_upload(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    // Auth check
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+
+    // Extract file from multipart form
+    let mut file_data: Option<Vec<u8>> = None;
+    let mut filename: Option<String> = None;
+    let mut form_path: Option<String> = None;
+
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(field)) => {
+                let field_name = field.name().unwrap_or("").to_string();
+                
+                if field_name == "file" {
+                    // Get filename from Content-Disposition header
+                    if let Some(name) = field.file_name() {
+                        filename = Some(name.to_string());
+                    }
+                    
+                    // Read file data
+                    match field.bytes().await {
+                        Ok(bytes) => {
+                            file_data = Some(bytes.to_vec());
+                        }
+                        Err(e) => {
+                            error!("upload error reading file: {e:?}");
+                            return (StatusCode::BAD_REQUEST, format!("error reading file: {e}")).into_response();
+                        }
+                    }
+                } else if field_name == "path" {
+                    // Optional path field in form (alternative to query param)
+                    match field.text().await {
+                        Ok(path_str) => {
+                            form_path = Some(path_str);
+                        }
+                        Err(e) => {
+                            error!("upload error reading path field: {e:?}");
+                            // Continue, path is optional
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                // No more fields
+                break;
+            }
+            Err(e) => {
+                error!("upload error parsing multipart field: {e:?}");
+                return (StatusCode::BAD_REQUEST, format!("error parsing form: {e}")).into_response();
+            }
+        }
+    }
+
+    // Get file data
+    let Some(data) = file_data else {
+        return (StatusCode::BAD_REQUEST, "missing file field").into_response();
+    };
+
+    // Determine target path
+    let target_path = if let Some(p) = form_path.or_else(|| q.get("path").cloned()) {
+        // Use provided path
+        let Some(safe) = sanitize_rel_path(&p) else {
+            return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+        };
+        safe
+    } else if let Some(fname) = filename {
+        // Use filename from upload
+        if let Some(safe) = sanitize_rel_path(&fname) {
+            safe
+        } else {
+            // If filename doesn't pass sanitize_rel_path, try sanitize_name
+            match sanitize_name(&fname) {
+                Some(safe_name) => safe_name,
+                None => {
+                    return (StatusCode::BAD_REQUEST, "invalid filename").into_response();
+                }
+            }
+        }
+    } else {
+        // Generate a unique filename
+        let uuid_name = format!("{}.drawio", Uuid::new_v4());
+        uuid_name
+    };
+
+    // Ensure the target path ends with .drawio for files
+    let final_path = if !target_path.ends_with(".drawio") && !target_path.contains('/') {
+        // If it's a simple filename without extension, add .drawio
+        format!("{}.drawio", target_path)
+    } else if target_path.contains('/') {
+        // For paths with directories, check if the last component needs .drawio
+        let parts: Vec<&str> = target_path.split('/').collect();
+        if let Some(last) = parts.last() {
+            if !last.ends_with(".drawio") && !last.is_empty() {
+                let mut new_parts: Vec<String> = parts[..parts.len() - 1].iter().map(|s| s.to_string()).collect();
+                let new_last = format!("{}.drawio", last);
+                new_parts.push(new_last);
+                new_parts.join("/")
+            } else {
+                target_path
+            }
+        } else {
+            target_path
+        }
+    } else {
+        target_path
+    };
+
+    // Validate final path
+    let Some(safe_path) = sanitize_rel_path(&final_path) else {
+        return (StatusCode::BAD_REQUEST, "invalid final path").into_response();
+    };
+
+    // Convert file data to string (assuming it's XML/text)
+    let content = match String::from_utf8(data) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("upload error: file is not valid UTF-8: {e:?}");
+            return (StatusCode::BAD_REQUEST, "file must be valid UTF-8 text").into_response();
+        }
+    };
+
+    // Save file
+    let pb = to_data_rel_path(&state.data_dir, &safe_path);
+    if let Some(parent) = pb.parent() {
+        if let Err(e) = fs::create_dir_all(parent).await {
+            error!("upload error creating directory: {e:?}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
+    // Update or create room
+    let room = match ensure_room_loaded(&state, &safe_path).await {
+        Ok(r) => r,
+        Err(e) => {
+            error!("upload error loading room: {e:?}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    {
+        let mut guard = room.content.write().await;
+        *guard = content.clone();
+        room.version.fetch_add(1, Ordering::SeqCst);
+    }
+
+    mark_file_writing(&state, &safe_path);
+    if let Err(e) = fs::write(&pb, content.as_bytes()).await {
+        error!("upload error writing file: {e:?}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    // Return success with path
+    Json(serde_json::json!({ "path": safe_path })).into_response()
 }
 
 

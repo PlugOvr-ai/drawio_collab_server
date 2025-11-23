@@ -76,6 +76,7 @@
         <a href="#" id="nav-root"><span class="icon folder"></span><span>My files</span></a>
         <button id="nav-new-folder"><span class="icon folder"></span><span>New folder</span></button>
         <button id="nav-new-file"><span class="icon file"></span><span>New file</span></button>
+        <button id="nav-upload"><span class="icon file"></span><span>Upload file</span></button>
         <button id="nav-settings"><span class="icon gear"></span><span>Settings</span></button>
 
       </div>
@@ -87,6 +88,7 @@
         <div class="toolbar">
           <input id="filter" placeholder="Search" />
           <button id="refresh">Refresh</button>
+          <button id="upload-btn">Upload</button>
           <span class="muted" id="greeting">Hello, guest</span>
         </div>
       </header>
@@ -107,6 +109,8 @@
       </div>
     </main>
   </div>
+  <!-- Hidden file input for upload -->
+  <input type="file" id="file-input" accept=".drawio" style="display: none;" />
   <!-- Settings modal -->
   <div id="settings-backdrop" style="display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 40;"></div>
   <div id="settings-modal" class="card" style="display:none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(440px, 92vw); padding: 16px; z-index: 50;">
@@ -288,6 +292,69 @@
     });
     $('refresh').onclick = refreshFiles;
     $('nav-root').onclick = (e) => { e.preventDefault(); cwd = ''; refreshFiles(); };
+    
+    // Upload functionality
+    const fileInput = $('file-input');
+    const uploadBtn = $('upload-btn');
+    const navUpload = $('nav-upload');
+    
+    async function handleFileUpload(file) {
+      if (!file) return;
+      
+      // Check if file has .drawio extension
+      if (!file.name.endsWith('.drawio')) {
+        if (!confirm('File does not end with .drawio. Upload anyway? (extension will be added)')) {
+          return;
+        }
+      }
+      
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      // Build URL with optional path query parameter
+      let url = '/api/upload';
+      if (cwd) {
+        // If in a subdirectory, suggest the path with the filename
+        const suggestedPath = cwd + '/' + file.name;
+        url += '?path=' + encodeURIComponent(suggestedPath);
+      }
+      
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          credentials: 'include',
+          body: formData,
+        });
+        
+        if (!res.ok) {
+          const errorText = await res.text();
+          throw new Error(errorText || 'Upload failed');
+        }
+        
+        const result = await res.json();
+        alert(`File uploaded successfully: ${result.path}`);
+        await refreshFiles();
+      } catch (e) {
+        alert('Upload error: ' + e.message);
+      }
+    }
+    
+    fileInput.onchange = (e) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        handleFileUpload(file);
+      }
+      // Reset input so same file can be selected again
+      fileInput.value = '';
+    };
+    
+    if (uploadBtn) {
+      uploadBtn.onclick = () => fileInput.click();
+    }
+    if (navUpload) {
+      navUpload.onclick = () => fileInput.click();
+    }
+    
     $('nav-new-folder').onclick = async () => {
       const name = prompt('Folder name:');
       if (!name) return;
