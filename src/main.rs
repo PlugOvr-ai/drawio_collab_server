@@ -1,3 +1,5 @@
+mod git_versioning;
+
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -36,6 +38,7 @@ use reqwest::Client;
 use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind, Config};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use anyhow::Context;
 
 #[derive(Clone)]
 struct AppState {
@@ -45,6 +48,7 @@ struct AppState {
     auth_token: String,
     require_token: bool,
     writing_files: Arc<DashMap<String, Instant>>, // file_key -> timestamp when we started writing
+    git_manager: Arc<git_versioning::GitVersionManager>,
 }
 
 struct Room {
@@ -147,7 +151,7 @@ struct MkdirBody {
 #[command(about = "Axum server for collaborative draw.io editing")]
 struct Args {
     /// Require token for all file operations (like Jupyter). Also disables /login.
-    #[arg(long, env = "DRAWIO_REQUIRE_TOKEN", default_value_t = false)]
+    #[arg(long, env = "DRAWIO_REQUIRE_TOKEN", default_value_t = true)]
     require_token: bool,
 
     /// Token value; if not provided, a random token is generated at startup
@@ -177,6 +181,12 @@ async fn main() -> anyhow::Result<()> {
     let auth_token = args.token.unwrap_or_else(|| Uuid::new_v4().to_string());
     let require_token = args.require_token;
 
+    // Initialize Git version manager
+    let git_manager = Arc::new(
+        git_versioning::GitVersionManager::new(data_dir.clone())
+            .context("Failed to initialize Git version manager")?
+    );
+
     let state = AppState {
         sessions: Arc::new(DashMap::new()),
         rooms: Arc::new(DashMap::new()),
@@ -184,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
         auth_token,
         require_token,
         writing_files: Arc::new(DashMap::new()),
+        git_manager,
     };
     
     // Start file watcher task
@@ -212,6 +223,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/download", get(api_download))
         .route("/api/upload", post(api_upload))
         .route("/api/ai_modify", post(api_ai_modify))
+        .route("/api/versions", get(api_list_versions).post(api_restore_version))
+        .route("/api/versions/checkpoint", post(api_checkpoint))
+        .route("/api/versions/push", post(api_push_to_remote))
+        .route("/api/versions/remote", post(api_set_remote))
         .route("/raw/:name", get(get_raw_file))
         .route("/ws/:name", get(ws_handler))
         .fallback_service(
@@ -579,6 +594,20 @@ async fn put_file(
                 error!("write file error: {err:?}");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
+            
+            // Create Git version (non-blocking, only on significant changes)
+            let git_mgr = state.git_manager.clone();
+            let file_key_clone = file_key.clone();
+            let content_clone = req.content.clone();
+            let username = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar)
+                .unwrap_or_else(|| "unknown".to_string());
+            let version = room.version.load(Ordering::SeqCst);
+            tokio::task::spawn(async move {
+                if let Err(e) = git_mgr.create_version(&file_key_clone, &content_clone, &username, version, None, false).await {
+                    error!("Failed to create Git version for {}: {e:?}", file_key_clone);
+                }
+            });
+            
             StatusCode::NO_CONTENT.into_response()
         }
         Err(err) => {
@@ -824,6 +853,18 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
                                 if let Err(err) = fs::write(&path, content.as_bytes()).await {
                                     error!("ws write file error: {err:?}");
                                 }
+                                
+                                // Create Git version (non-blocking, only on significant changes)
+                                let git_mgr = state.git_manager.clone();
+                                let file_key_clone = file_key.clone();
+                                let content_clone = content.clone();
+                                let username_clone = username.clone();
+                                tokio::task::spawn(async move {
+                                    if let Err(e) = git_mgr.create_version(&file_key_clone, &content_clone, &username_clone, new_version, None, false).await {
+                                        error!("Failed to create Git version for {}: {e:?}", file_key_clone);
+                                    }
+                                });
+                                
                                 let _ = room.tx.send(ServerWsMessage::Update {
                                     version: new_version,
                                     content,
@@ -1033,17 +1074,33 @@ async fn api_put_file(
         let _ = fs::create_dir_all(parent).await;
     }
     let room = ensure_room_loaded(&state, &safe).await.map_err(|_| ()).ok();
-    if let Some(room) = room {
+    let version = if let Some(ref r) = room {
         {
-            let mut guard = room.content.write().await;
+            let mut guard = r.content.write().await;
             *guard = req.content.clone();
-            room.version.fetch_add(1, Ordering::SeqCst);
+            r.version.fetch_add(1, Ordering::SeqCst);
         }
-    }
+        room.as_ref().unwrap().version.load(Ordering::SeqCst)
+    } else {
+        0
+    };
     mark_file_writing(&state, &safe);
     if let Err(_) = fs::write(&pb, req.content.as_bytes()).await {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+    
+    // Create Git version (non-blocking, only on significant changes)
+    let git_mgr = state.git_manager.clone();
+    let safe_clone = safe.clone();
+    let content_clone = req.content.clone();
+    let username = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar)
+        .unwrap_or_else(|| "unknown".to_string());
+    tokio::task::spawn(async move {
+        if let Err(e) = git_mgr.create_version(&safe_clone, &content_clone, &username, version, None, false).await {
+            error!("Failed to create Git version for {}: {e:?}", safe_clone);
+        }
+    });
+    
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -2048,5 +2105,204 @@ async fn reload_file_from_disk(state: &AppState, file_key: &str, path: &Path) ->
     }
     
     Ok(())
+}
+
+// ----- Git Version Control API -----
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RestoreVersionRequest {
+    commit_oid: String,
+    message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CheckpointRequest {
+    message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SetRemoteRequest {
+    remote_name: String,
+    url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PushRequest {
+    remote_name: Option<String>,
+    branch: Option<String>,
+}
+
+async fn api_list_versions(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    
+    let Some(path) = q.get("path") else {
+        return (StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    
+    let Some(safe) = sanitize_rel_path(path) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
+    
+    match state.git_manager.list_versions(&safe).await {
+        Ok(versions) => Json(serde_json::json!({
+            "file": safe,
+            "versions": versions
+        })).into_response(),
+        Err(e) => {
+            error!("Failed to list versions: {e:?}");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to list versions: {e}")).into_response()
+        }
+    }
+}
+
+async fn api_restore_version(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    Json(req): Json<RestoreVersionRequest>,
+) -> impl IntoResponse {
+    let Some(username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    
+    let Some(path) = q.get("path") else {
+        return (StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    
+    let Some(safe) = sanitize_rel_path(path) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
+    
+    // Get current version from room
+    let version = if let Ok(room) = ensure_room_loaded(&state, &safe).await {
+        room.version.load(Ordering::SeqCst) + 1
+    } else {
+        1
+    };
+    
+    match state.git_manager.restore_version(&safe, &req.commit_oid, &username, version).await {
+        Ok(version_info) => {
+            // Reload room with restored content
+            if let Ok(room) = ensure_room_loaded(&state, &safe).await {
+                let content = state.git_manager.get_version_content(&safe, &req.commit_oid).await
+                    .unwrap_or_default();
+                {
+                    let mut guard = room.content.write().await;
+                    *guard = content.clone();
+                    room.version.store(version, Ordering::SeqCst);
+                }
+                
+                // Write to disk
+                let pb = to_data_rel_path(&state.data_dir, &safe);
+                if let Err(e) = fs::write(&pb, content.as_bytes()).await {
+                    error!("Failed to write restored file: {e:?}");
+                }
+            }
+            
+            Json(version_info).into_response()
+        }
+        Err(e) => {
+            error!("Failed to restore version: {e:?}");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to restore version: {e}")).into_response()
+        }
+    }
+}
+
+async fn api_checkpoint(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    Json(req): Json<CheckpointRequest>,
+) -> impl IntoResponse {
+    let Some(username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    
+    let Some(path) = q.get("path") else {
+        return (StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    
+    let Some(safe) = sanitize_rel_path(path) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
+    
+    // Get current content from room
+    let (content, version) = if let Ok(room) = ensure_room_loaded(&state, &safe).await {
+        let content = room.content.read().await.clone();
+        let version = room.version.load(Ordering::SeqCst);
+        (content, version)
+    } else {
+        return (StatusCode::NOT_FOUND, "File not found").into_response();
+    };
+    
+    // Force commit (checkpoint)
+    match state.git_manager.create_version(&safe, &content, &username, version, req.message.as_deref(), true).await {
+        Ok(Some(version_info)) => Json(version_info).into_response(),
+        Ok(None) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create checkpoint").into_response(),
+        Err(e) => {
+            error!("Failed to create checkpoint: {e:?}");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create checkpoint: {e}")).into_response()
+        }
+    }
+}
+
+async fn api_set_remote(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(_q): Query<std::collections::HashMap<String, String>>,
+    Json(req): Json<SetRemoteRequest>,
+) -> impl IntoResponse {
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &_q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    
+    match state.git_manager.set_remote(&req.remote_name, &req.url).await {
+        Ok(_) => Json(serde_json::json!({
+            "remote_name": req.remote_name,
+            "url": req.url,
+            "status": "configured"
+        })).into_response(),
+        Err(e) => {
+            error!("Failed to set remote: {e:?}");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to set remote: {e}")).into_response()
+        }
+    }
+}
+
+async fn api_push_to_remote(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Query(_q): Query<std::collections::HashMap<String, String>>,
+    Json(req): Json<PushRequest>,
+) -> impl IntoResponse {
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &_q, &jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    
+    let remote_name = req.remote_name.unwrap_or_else(|| "origin".to_string());
+    let branch = req.branch.unwrap_or_else(|| "main".to_string());
+    
+    match state.git_manager.push_to_remote(&remote_name, &branch).await {
+        Ok(_) => Json(serde_json::json!({
+            "remote": remote_name,
+            "branch": branch,
+            "status": "pushed"
+        })).into_response(),
+        Err(e) => {
+            error!("Failed to push to remote: {e:?}");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to push: {e}")).into_response()
+        }
+    }
 }
 
