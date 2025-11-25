@@ -155,7 +155,7 @@
       lastXml = meta.content || '';
       // If editor already ready, push content
       if (isEditorReady) {
-        postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: fileName });
+        postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: fileName });
       }
     }
 
@@ -175,7 +175,7 @@
             lastXml = msg.content || '';
             if (msg.your_id) { myClientId = msg.your_id; }
             if (isEditorReady) {
-              postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: filePath });
+              postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
             }
           } else if (msg.type === 'presence_snapshot') {
             for (const u of msg.users || []) {
@@ -214,7 +214,7 @@
                 // Always reload for AI updates
                 console.log('[WS] Reloading editor with AI-generated XML');
                 $('status').textContent = 'AI update received, reloading...';
-                postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: filePath });
+                postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
                 // Show visual feedback
                 setTimeout(() => {
                   $('status').textContent = 'AI update applied';
@@ -224,7 +224,7 @@
                 // Always reload for external file changes
                 console.log('[WS] Reloading editor with externally modified file');
                 $('status').textContent = 'File changed externally, reloading...';
-                postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: filePath });
+                postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
                 // Show visual feedback
                 setTimeout(() => {
                   $('status').textContent = 'External change applied';
@@ -235,7 +235,7 @@
                 try {
                   postToEditor({ action: 'merge', xml: lastXml });
                 } catch {
-                  postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: filePath });
+                  postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
                 }
               }
             } else {
@@ -352,11 +352,11 @@
         if (!res.ok) throw new Error(await res.text());
         const out = await res.json();
         // The server will broadcast via WS; but in case no WS, apply locally.
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          lastXml = out.content || '';
-          postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: filePath });
-          $('version').textContent = 'v' + (out.version || currentVersion);
-        }
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            lastXml = out.content || '';
+            postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
+            $('version').textContent = 'v' + (out.version || currentVersion);
+          }
         $('status').textContent = 'AI applied';
         closeAi();
         addAiActivity('local', 'completed', 'Applied changes');
@@ -420,7 +420,7 @@
         isEditorReady = true;
         // Load initial xml once editor is ready
         if (lastXml !== null) {
-          postToEditor({ action: 'load', autosave: 1, modified: 'unsavedChanges', xml: lastXml, title: filePath });
+          postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
         }
         // Request event stream (selection/mouse) from embed
         try {
@@ -451,6 +451,7 @@
           }
         } catch {}
       }
+      console.log('data', data);
       // The editor asks us to save current XML
       if (data.event === 'save' || data.action === 'save' || data.event === 'autosave') {
         try {
@@ -481,7 +482,7 @@
             return;
           }
           $('status').textContent = 'Saved';
-          postToEditor({ action: 'saved' });
+          postToEditor({ action: 'status', modified: false });
           return;
         } catch (e) {
           $('status').textContent = `Save error`;
@@ -517,7 +518,7 @@
                 return;
               }
               $('status').textContent = 'Saved';
-              postToEditor({ action: 'saved' });
+              postToEditor({ action: 'status', modified: false });
             } catch {
               $('status').textContent = 'Save error';
             }
