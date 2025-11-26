@@ -167,7 +167,7 @@ struct Args {
     port: u16,
 
     /// Directory to store .drawio files
-    #[arg(long, default_value = "data")]
+    #[arg(long, env = "DATA_DIR", default_value = "data")]
     data_dir: PathBuf,
 }
 
