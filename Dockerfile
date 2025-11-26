@@ -54,5 +54,5 @@ ENV PORT=3000
 ENV DATA_DIR=data
 
 # Run the server
-CMD ["./drawioserver", "--data-dir", "data"]
+CMD ["./drawioserver"]
 
