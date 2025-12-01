@@ -877,8 +877,8 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
                                 });
                             }
                             Ok(ClientWsMessage::Cursor { x, y, basis }) => {
-                                let x = x.clamp(0.0, 1.0);
-                                let y = y.clamp(0.0, 1.0);
+                                //let x = x.clamp(0.0, 1.0);
+                                //let y = y.clamp(0.0, 1.0);
                                 let _ = room.tx.send(ServerWsMessage::Cursor {
                                     username: username.clone(),
                                     x, y,

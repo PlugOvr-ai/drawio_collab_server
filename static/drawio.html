@@ -143,6 +143,8 @@
     const cursors = new Map(); // username -> {el, color, selEl}
     let lastEmbedMoveAt = 0;
     const aiJobs = new Map(); // job_id -> {lastPhase, createdAt}
+    let backgroundPagePosition = null; // Stores geBackgroundPage position for cursor offset correction
+    let receiverViewState = null; // Stores receiver's view state (scale, translate) for coordinate conversion
     
     // Helper function to add token to URLs
     function addTokenToUrl(url) {
@@ -443,6 +445,36 @@
       }
     };
 
+    // Get receiver's view state from iframe (for coordinate conversion)
+    function updateReceiverViewState() {
+      const iframe = $('editor');
+      try {
+        const childWin = iframe.contentWindow;
+        if (!childWin) return;
+        
+        // Try to get graph view state
+        let graph = null;
+        if (typeof childWin.EditorUi !== 'undefined' && childWin.EditorUi.currentEditor) {
+          graph = childWin.EditorUi.currentEditor.editor.graph;
+        } else if (typeof childWin.App !== 'undefined' && childWin.App.ui && childWin.App.ui.editor) {
+          graph = childWin.App.ui.editor.graph;
+        }
+        
+        if (graph && graph.view) {
+          receiverViewState = {
+            scale: graph.view.scale || 1,
+            translateX: graph.view.translate ? graph.view.translate.x : 0,
+            translateY: graph.view.translate ? graph.view.translate.y : 0
+          };
+        }
+      } catch {
+        // Not accessible; ignore
+      }
+    }
+    
+    // Update receiver view state periodically
+    setInterval(updateReceiverViewState, 500);
+    
     // If the iframe is same-origin (when you self-host draw.io), attach direct mouse tracking for precise cursors
     function attachSameOriginMouseTracking() {
       const iframe = $('editor');
@@ -457,23 +489,29 @@
           const now = performance.now();
           if (now - lastSentLocal < 33) return;
           lastSentLocal = now;
-          // Prefer coordinates relative to the drawing stage to remove toolbar offsets
-          const stage = childDoc.querySelector('.geDiagramContainer') || childDoc.querySelector('#geDiagramContainer');
-          if (stage) {
-            const stageRect = stage.getBoundingClientRect();
-            const nx = Math.max(0, Math.min(1, (e.clientX - stageRect.left) / Math.max(1, stageRect.width)));
-            const ny = Math.max(0, Math.min(1, (e.clientY - stageRect.top) / Math.max(1, stageRect.height)));
-            ws.send(JSON.stringify({ type: 'cursor', basis: 'stage', x: nx, y: ny }));
+          
+          // Get absolute coordinates relative to geBackgroundPage origin
+          const backgroundPage = childDoc.querySelector('.geBackgroundPage');
+          if (backgroundPage) {
+            const bgPageRect = backgroundPage.getBoundingClientRect();
+            // Calculate absolute coordinates relative to geBackgroundPage origin
+            const absoluteX = e.clientX - bgPageRect.left;
+            const absoluteY = e.clientY - bgPageRect.top;
+            // Send absolute coordinates directly (no normalization)
+            ws.send(JSON.stringify({ type: 'cursor', x: absoluteX, y: absoluteY }));
           } else {
-            const overlayRect = $('overlay').getBoundingClientRect();
-            const iframeRect = iframe.getBoundingClientRect();
-            const absX = iframeRect.left + e.clientX;
-            const absY = iframeRect.top + e.clientY;
-            const nx = Math.max(0, Math.min(1, (absX - overlayRect.left) / Math.max(1, overlayRect.width)));
-            const ny = Math.max(0, Math.min(1, (absY - overlayRect.top) / Math.max(1, overlayRect.height)));
-            ws.send(JSON.stringify({ type: 'cursor', x: nx, y: ny }));
+            // Fallback: use stage coordinates if geBackgroundPage not found
+            const stage = childDoc.querySelector('.geDiagramContainer') || childDoc.querySelector('#geDiagramContainer');
+            if (stage) {
+              const stageRect = stage.getBoundingClientRect();
+              const nx = Math.max(0, Math.min(1, (e.clientX - stageRect.left) / Math.max(1, stageRect.width)));
+              const ny = Math.max(0, Math.min(1, (e.clientY - stageRect.top) / Math.max(1, stageRect.height)));
+              ws.send(JSON.stringify({ type: 'cursor', basis: 'stage', x: nx, y: ny }));
+            }
           }
         }, { passive: true });
+        // Also update view state when tracking is attached
+        updateReceiverViewState();
       } catch {
         // Not same-origin; ignore
       }
@@ -488,6 +526,12 @@
       try {
         data = JSON.parse(evt.data);
       } catch {
+        return;
+      }
+      // Background page position update from iframe - check this early
+      if (data.event === 'backgroundPagePosition') {
+        backgroundPagePosition = data;
+        console.log('Background page position updated:', backgroundPagePosition);
         return;
       }
       // Editor ready lifecycle
@@ -515,18 +559,26 @@
         } catch {}
       }
       // Mouse move events from embed; forward if present
-      if ((data.event === 'mouseMove' || data.event === 'mousemove' || data.action === 'mouseMove') && typeof data.x === 'number' && typeof data.y === 'number') {
+      if ((data.event === 'mouseMove' || data.event === 'mousemove' || data.action === 'mouseMove')) {
         try {
           if (ws && ws.readyState === WebSocket.OPEN) {
-            const rect = $('overlay').getBoundingClientRect();
-            const nx = Math.max(0, Math.min(1, (data.x - rect.left) / Math.max(1, rect.width)));
-            const ny = Math.max(0, Math.min(1, (data.y - rect.top) / Math.max(1, rect.height)));
-            ws.send(JSON.stringify({ type: 'cursor', x: nx, y: ny }));
-            lastEmbedMoveAt = performance.now();
+            // Send absolute coordinates relative to geBackgroundPage origin directly (no normalization)
+            if (typeof data.absoluteX === 'number' && typeof data.absoluteY === 'number') {
+              // Send absolute coordinates relative to geBackgroundPage origin
+              ws.send(JSON.stringify({ type: 'cursor', x: data.absoluteX, y: data.absoluteY }));
+              lastEmbedMoveAt = performance.now();
+            } else if (typeof data.x === 'number' && typeof data.y === 'number') {
+              // Fallback: if no absolute coordinates, send screen coordinates (legacy support)
+              ws.send(JSON.stringify({ type: 'cursor', x: data.x, y: data.y }));
+              lastEmbedMoveAt = performance.now();
+            }
           }
         } catch {}
       }
-      console.log('data', data);
+      // Debug: log all messages to see what we're receiving
+      if (data.event === 'backgroundPagePosition' || data.event === 'mouseMove') {
+        console.log('Received message:', data.event, data);
+      }
       // The editor asks us to save current XML
       if (data.event === 'save' || data.action === 'save' || data.event === 'autosave') {
         try {
@@ -667,6 +719,8 @@
       const overlay = $('overlay');
       const rect = overlay.getBoundingClientRect();
       let x, y;
+      
+      // If basis is not 'stage', assume nx/ny are absolute coordinates relative to geBackgroundPage origin
       if (basis === 'stage') {
         const s = getOverlayStageRect();
         if (s) {
@@ -677,9 +731,24 @@
           y = ny * rect.height;
         }
       } else {
-        x = nx * rect.width;
-        y = ny * rect.height;
+        // nx/ny are absolute coordinates relative to geBackgroundPage origin
+        // Convert to screen coordinates using receiver's geBackgroundPage position
+        if (backgroundPagePosition) {
+          const iframe = $('editor');
+          const iframeRect = iframe.getBoundingClientRect();
+          const bgPageClientLeft = backgroundPagePosition.clientLeft || 0;
+          const bgPageClientTop = backgroundPagePosition.clientTop || 0;
+          
+          // Add receiver's geBackgroundPage position to absolute coordinates
+          x = iframeRect.left + bgPageClientLeft + nx;
+          y = iframeRect.top + bgPageClientTop + ny;
+        } else {
+          // Fallback: treat as normalized coordinates if backgroundPagePosition not available
+          x = nx * rect.width;
+          y = ny * rect.height;
+        }
       }
+      
       c.el.style.left = x + 'px';
       c.el.style.top = y + 'px';
     }
@@ -697,9 +766,31 @@
       const y = e.clientY - rect.top;
       if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
       lastSent = now;
-      const nx = x / Math.max(1, rect.width);
-      const ny = y / Math.max(1, rect.height);
-      ws.send(JSON.stringify({ type: 'cursor', x: nx, y: ny }));
+      
+      // Try to get absolute coordinates relative to geBackgroundPage origin
+      const iframe = $('editor');
+      try {
+        const childDoc = iframe.contentWindow.document;
+        const backgroundPage = childDoc.querySelector('.geBackgroundPage');
+        if (backgroundPage) {
+          const bgPageRect = backgroundPage.getBoundingClientRect();
+          const iframeRect = iframe.getBoundingClientRect();
+          // Calculate absolute coordinates relative to geBackgroundPage origin
+          const absoluteX = (e.clientX - iframeRect.left) - bgPageRect.left;
+          const absoluteY = (e.clientY - iframeRect.top) - bgPageRect.top;
+          ws.send(JSON.stringify({ type: 'cursor', x: absoluteX, y: absoluteY }));
+        } else {
+          // Fallback: send normalized coordinates if geBackgroundPage not available
+          const nx = x / Math.max(1, rect.width);
+          const ny = y / Math.max(1, rect.height);
+          ws.send(JSON.stringify({ type: 'cursor', x: nx, y: ny }));
+        }
+      } catch {
+        // Not same-origin or error: send normalized coordinates
+        const nx = x / Math.max(1, rect.width);
+        const ny = y / Math.max(1, rect.height);
+        ws.send(JSON.stringify({ type: 'cursor', x: nx, y: ny }));
+      }
     });
 
     // Commit button handler
