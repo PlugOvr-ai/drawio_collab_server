@@ -499,16 +499,7 @@
             const absoluteY = e.clientY - bgPageRect.top;
             // Send absolute coordinates directly (no normalization)
             ws.send(JSON.stringify({ type: 'cursor', x: absoluteX, y: absoluteY }));
-          } else {
-            // Fallback: use stage coordinates if geBackgroundPage not found
-            const stage = childDoc.querySelector('.geDiagramContainer') || childDoc.querySelector('#geDiagramContainer');
-            if (stage) {
-              const stageRect = stage.getBoundingClientRect();
-              const nx = Math.max(0, Math.min(1, (e.clientX - stageRect.left) / Math.max(1, stageRect.width)));
-              const ny = Math.max(0, Math.min(1, (e.clientY - stageRect.top) / Math.max(1, stageRect.height)));
-              ws.send(JSON.stringify({ type: 'cursor', basis: 'stage', x: nx, y: ny }));
-            }
-          }
+          } 
         }, { passive: true });
         // Also update view state when tracking is attached
         updateReceiverViewState();
