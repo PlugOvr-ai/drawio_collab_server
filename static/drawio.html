@@ -498,6 +498,7 @@
             const absoluteX = e.clientX - bgPageRect.left;
             const absoluteY = e.clientY - bgPageRect.top;
             // Send absolute coordinates directly (no normalization)
+            console.log('SEND TO WS: cursor', absoluteX, absoluteY);
             ws.send(JSON.stringify({ type: 'cursor', x: absoluteX, y: absoluteY }));
           } 
         }, { passive: true });
@@ -523,6 +524,28 @@
       if (data.event === 'backgroundPagePosition') {
         backgroundPagePosition = data;
         console.log('Background page position updated:', backgroundPagePosition);
+        
+        // Verify the position by getting it directly from iframe (for debugging)
+        try {
+          const iframe = $('editor');
+          const childDoc = iframe.contentWindow.document;
+          const bgPage = childDoc.querySelector('.geBackgroundPage');
+          if (bgPage) {
+            const directRect = bgPage.getBoundingClientRect();
+            const iframeRect = iframe.getBoundingClientRect();
+            console.log('Direct verification:', {
+              fromMessage: { clientLeft: data.clientLeft, clientTop: data.clientTop },
+              directFromIframe: { left: directRect.left, top: directRect.top },
+              iframeRect: { left: iframeRect.left, top: iframeRect.top },
+              diff: {
+                left: directRect.left - data.clientLeft,
+                top: directRect.top - data.clientTop
+              }
+            });
+          }
+        } catch (e) {
+          console.log('Could not verify backgroundPage position:', e);
+        }
         return;
       }
       // Editor ready lifecycle
@@ -731,8 +754,28 @@
           const bgPageClientTop = backgroundPagePosition.clientTop || 0;
           
           // Add receiver's geBackgroundPage position to absolute coordinates
-          x = iframeRect.left + bgPageClientLeft + nx;
-          y = iframeRect.top + bgPageClientTop + ny;
+          // bgPageClientLeft/Top are relative to iframe viewport
+          // iframeRect.left/top are relative to parent viewport
+          // So we add: parent viewport position of iframe + iframe viewport position of bgPage + absolute coord
+          x =  bgPageClientLeft + nx;
+          y =  bgPageClientTop + ny;
+          console.log('moveCursor debug:', {
+            username,
+            absoluteCoord: { nx, ny },
+            iframeRect: { left: iframeRect.left, top: iframeRect.top },
+            bgPagePos: { left: bgPageClientLeft, top: bgPageClientTop },
+            final: { x, y }
+          });
+          // Debug logging (occasionally to avoid spam)
+          if (Math.random() < 0.01) {
+            console.log('moveCursor debug:', {
+              username,
+              absoluteCoord: { nx, ny },
+              iframeRect: { left: iframeRect.left, top: iframeRect.top },
+              bgPagePos: { left: bgPageClientLeft, top: bgPageClientTop },
+              final: { x, y }
+            });
+          }
         } else {
           // Fallback: treat as normalized coordinates if backgroundPagePosition not available
           x = nx * rect.width;
@@ -769,6 +812,7 @@
           // Calculate absolute coordinates relative to geBackgroundPage origin
           const absoluteX = (e.clientX - iframeRect.left) - bgPageRect.left;
           const absoluteY = (e.clientY - iframeRect.top) - bgPageRect.top;
+          console.log('SEND TO WS: cursor', absoluteX, absoluteY);
           ws.send(JSON.stringify({ type: 'cursor', x: absoluteX, y: absoluteY }));
         } else {
           // Fallback: send normalized coordinates if geBackgroundPage not available
