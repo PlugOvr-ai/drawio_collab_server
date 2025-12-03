@@ -47,7 +47,7 @@ window.ICONSEARCH_PATH = null;
                 parent.postMessage(JSON.stringify(positionData), '*');
             }
             
-            console.log('geBackgroundPage absolute position:', positionData);
+           //  console.log('geBackgroundPage absolute position:', positionData);
         } else {
             console.log('geBackgroundPage element not found');
         }
@@ -76,12 +76,12 @@ window.ICONSEARCH_PATH = null;
             
             // Debug logging (occasionally to avoid spam)
             if (Math.random() < 0.01) {
-                console.log('PostConfig sendMousePosition debug:', {
-                    clientX: e.clientX,
-                    clientY: e.clientY,
-                    bgPageRect: { left: bgPageRect.left, top: bgPageRect.top },
-                    absolute: { x: absoluteX, y: absoluteY }
-                });
+               // console.log('PostConfig sendMousePosition debug:', {
+               //     clientX: e.clientX,
+               //     clientY: e.clientY,
+               //     bgPageRect: { left: bgPageRect.left, top: bgPageRect.top },
+               //     absolute: { x: absoluteX, y: absoluteY }
+               // });
             }
             
             var message = {
