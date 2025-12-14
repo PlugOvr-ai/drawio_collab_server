@@ -72,6 +72,7 @@ The admin panel allows you to configure Git remote settings and schedule automat
   - Enable/disable automatic pushes
   - Set push interval (minimum: 60 seconds)
   - Configure remote name and branch
+  - **Push on Commit**: Automatically push immediately after each Git commit is created
 - **Test Push**: Verify Git credentials are working correctly before enabling automatic pushes
 
 ### Adding Git Access Tokens

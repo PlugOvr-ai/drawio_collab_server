@@ -176,6 +176,13 @@
         <label for="schedule-branch">Branch Name</label>
         <input type="text" id="schedule-branch" value="main" placeholder="main" />
       </div>
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="push-on-commit" />
+          <label for="push-on-commit" style="margin: 0;">Push automatically after each commit</label>
+        </div>
+        <div class="help-text">When enabled, every Git commit will be immediately pushed to the remote repository</div>
+      </div>
       <button id="save-schedule">Save Schedule Configuration</button>
       <button id="load-schedule" style="margin-left: 10px; background: var(--muted);">Load Current</button>
     </div>
@@ -248,10 +255,13 @@
       if (!fullUrl) return { baseUrl: '', token: '' };
       
       try {
-        // Try to parse URL with token: https://token@hostname/path
-        const match = fullUrl.match(/^https?:\/\/([^@]+)@(.+)$/);
+        // Try to parse URL with token: https://token@hostname/path or http://token@hostname/path
+        const match = fullUrl.match(/^(https?):\/\/([^@]+)@(.+)$/);
         if (match) {
-          return { baseUrl: `https://${match[2]}`, token: match[1] };
+          const protocol = match[1]; // Preserve original protocol (http or https)
+          const token = match[2];
+          const rest = match[3];
+          return { baseUrl: `${protocol}://${rest}`, token: token };
         }
         // If no token, return as-is
         return { baseUrl: fullUrl, token: '' };
@@ -336,6 +346,7 @@
         $('interval-seconds').value = data.interval_seconds || 3600;
         $('schedule-remote').value = data.remote_name || 'origin';
         $('schedule-branch').value = data.branch || 'main';
+        $('push-on-commit').checked = data.push_on_commit || false;
         showStatus('Schedule configuration loaded', 'success');
       } catch (e) {
         showStatus('Failed to load schedule: ' + e.message, 'error');
@@ -348,6 +359,7 @@
       const intervalSeconds = parseInt($('interval-seconds').value, 10);
       const remoteName = $('schedule-remote').value.trim();
       const branch = $('schedule-branch').value.trim();
+      const pushOnCommit = $('push-on-commit').checked;
       
       if (intervalSeconds < 60) {
         showStatus('Interval must be at least 60 seconds', 'error');
@@ -372,6 +384,7 @@
             interval_seconds: intervalSeconds,
             remote_name: remoteName,
             branch: branch,
+            push_on_commit: pushOnCommit,
           }),
         });
         showStatus('Schedule configuration saved successfully', 'success');

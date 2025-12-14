@@ -204,6 +204,7 @@ async fn main() -> anyhow::Result<()> {
         interval_seconds: 3600, // 1 hour default
         remote_name: "origin".to_string(),
         branch: "main".to_string(),
+        push_on_commit: false,
     }));
 
     let state = AppState {
@@ -667,9 +668,19 @@ async fn put_file(
                     .unwrap_or_else(|| "unknown".to_string());
                 let version = room.version.load(Ordering::SeqCst);
                 let message = q.get("message").map(|s| s.clone());
+                let push_schedule = state.push_schedule.clone();
                 tokio::task::spawn(async move {
                     if let Err(e) = git_mgr.create_version(&file_key_clone, &content_clone, &username, version, message.as_deref(), true).await {
                         error!("Failed to create Git version for {}: {e:?}", file_key_clone);
+                    } else {
+                        // Push after commit if push_on_commit is enabled
+                        let schedule = push_schedule.read().await;
+                        if schedule.push_on_commit {
+                            info!("Auto-pushing commit for {} to {}:{}", file_key_clone, schedule.remote_name, schedule.branch);
+                            if let Err(e) = git_mgr.push_to_remote(&schedule.remote_name, &schedule.branch).await {
+                                error!("Failed to auto-push after commit for {}: {e:?}", file_key_clone);
+                            }
+                        }
                     }
                 });
             }
@@ -1159,9 +1170,19 @@ async fn api_put_file(
         let username = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar)
             .unwrap_or_else(|| "unknown".to_string());
         let message = q.get("message").map(|s| s.clone());
+        let push_schedule = state.push_schedule.clone();
         tokio::task::spawn(async move {
             if let Err(e) = git_mgr.create_version(&safe_clone, &content_clone, &username, version, message.as_deref(), true).await {
                 error!("Failed to create Git version for {}: {e:?}", safe_clone);
+            } else {
+                // Push after commit if push_on_commit is enabled
+                let schedule = push_schedule.read().await;
+                if schedule.push_on_commit {
+                    info!("Auto-pushing commit for {} to {}:{}", safe_clone, schedule.remote_name, schedule.branch);
+                    if let Err(e) = git_mgr.push_to_remote(&schedule.remote_name, &schedule.branch).await {
+                        error!("Failed to auto-push after commit for {}: {e:?}", safe_clone);
+                    }
+                }
             }
         });
     }
@@ -2211,6 +2232,7 @@ struct PushSchedule {
     interval_seconds: u64,
     remote_name: String,
     branch: String,
+    push_on_commit: bool,
 }
 
 async fn api_list_versions(
@@ -2326,7 +2348,26 @@ async fn api_checkpoint(
     };
     
     // Force commit (checkpoint)
-    match state.git_manager.create_version(&safe, &content, &username, version, req.message.as_deref(), true).await {
+    let result = state.git_manager.create_version(&safe, &content, &username, version, req.message.as_deref(), true).await;
+    
+    // Push after commit if push_on_commit is enabled
+    if result.is_ok() {
+        let schedule = state.push_schedule.read().await;
+        if schedule.push_on_commit {
+            info!("Auto-pushing checkpoint for {} to {}:{}", safe, schedule.remote_name, schedule.branch);
+            let git_mgr = state.git_manager.clone();
+            let safe_clone = safe.clone();
+            let remote_name = schedule.remote_name.clone();
+            let branch = schedule.branch.clone();
+            tokio::task::spawn(async move {
+                if let Err(e) = git_mgr.push_to_remote(&remote_name, &branch).await {
+                    error!("Failed to auto-push after checkpoint for {}: {e:?}", safe_clone);
+                }
+            });
+        }
+    }
+    
+    match result {
         Ok(Some(version_info)) => Json(version_info).into_response(),
         Ok(None) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create checkpoint").into_response(),
         Err(e) => {
@@ -2391,9 +2432,10 @@ async fn api_push_to_remote(
 
 async fn admin_page(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+    if !check_admin_token(&state, &headers, &q) {
         return (StatusCode::UNAUTHORIZED, "Admin token required").into_response();
     }
     
@@ -2422,9 +2464,10 @@ struct GetRemoteResponse {
 
 async fn api_get_remote(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+    if !check_admin_token(&state, &headers, &q) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     
@@ -2476,10 +2519,11 @@ struct SetRemoteAdminRequest {
 
 async fn api_set_remote_admin(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<std::collections::HashMap<String, String>>,
     Json(req): Json<SetRemoteAdminRequest>,
 ) -> impl IntoResponse {
-    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+    if !check_admin_token(&state, &headers, &q) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     
@@ -2498,9 +2542,10 @@ async fn api_set_remote_admin(
 
 async fn api_get_schedule(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+    if !check_admin_token(&state, &headers, &q) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     
@@ -2514,14 +2559,16 @@ struct SetScheduleRequest {
     interval_seconds: u64,
     remote_name: Option<String>,
     branch: Option<String>,
+    push_on_commit: Option<bool>,
 }
 
 async fn api_set_schedule(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<std::collections::HashMap<String, String>>,
     Json(req): Json<SetScheduleRequest>,
 ) -> impl IntoResponse {
-    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+    if !check_admin_token(&state, &headers, &q) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     
@@ -2534,9 +2581,12 @@ async fn api_set_schedule(
     if let Some(branch) = req.branch {
         schedule.branch = branch;
     }
+    if let Some(push_on_commit) = req.push_on_commit {
+        schedule.push_on_commit = push_on_commit;
+    }
     
-    info!("Push schedule updated: enabled={}, interval={}s, remote={}, branch={}", 
-          schedule.enabled, schedule.interval_seconds, schedule.remote_name, schedule.branch);
+    info!("Push schedule updated: enabled={}, interval={}s, remote={}, branch={}, push_on_commit={}", 
+          schedule.enabled, schedule.interval_seconds, schedule.remote_name, schedule.branch, schedule.push_on_commit);
     
     Json(schedule.clone()).into_response()
 }
@@ -2549,10 +2599,11 @@ struct TestPushRequest {
 
 async fn api_test_push(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<std::collections::HashMap<String, String>>,
     Json(req): Json<TestPushRequest>,
 ) -> impl IntoResponse {
-    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+    if !check_admin_token(&state, &headers, &q) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     
