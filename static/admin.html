@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Draw.io Server - Admin</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --accent: #2563eb;
+      --text: #111827;
+      --danger: #dc2626;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      color: var(--text);
+      background: #f9fafb;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    h1 {
+      margin-top: 0;
+      color: var(--text);
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .form-group {
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    input[type="checkbox"] {
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    }
+    button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #1d4ed8;
+    }
+    button:disabled {
+      background: var(--muted);
+      cursor: not-allowed;
+    }
+    .status {
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+    .status.success {
+      background: #d1fae5;
+      color: #065f46;
+      border: 1px solid #6ee7b7;
+    }
+    .status.error {
+      background: #fee2e2;
+      color: #991b1b;
+      border: 1px solid #fca5a5;
+    }
+    .status.info {
+      background: #dbeafe;
+      color: #1e40af;
+      border: 1px solid #93c5fd;
+    }
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .help-text {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .section-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: var(--text);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Draw.io Server - Admin Panel</h1>
+    
+    <div id="status"></div>
+    
+    <div class="card">
+      <div class="section-title">Git Remote Configuration</div>
+      <div class="form-group">
+        <label for="remote-name">Remote Name</label>
+        <input type="text" id="remote-name" value="origin" placeholder="origin" />
+        <div class="help-text">The name of the git remote (typically "origin")</div>
+      </div>
+      <div class="form-group">
+        <label for="remote-url">Repository URL</label>
+        <input type="text" id="remote-url" placeholder="https://github.com/user/repo.git" />
+        <div class="help-text">The base URL of the git remote repository (without credentials)</div>
+      </div>
+      <div class="form-group">
+        <label for="remote-token">Access Token (optional)</label>
+        <input type="password" id="remote-token" placeholder="ghp_xxxxxxxxxxxx" />
+        <div class="help-text">
+          Personal access token for authentication (GitHub: ghp_xxx, GitLab: glpat-xxx, etc.)
+          <br>If provided, it will be embedded in the remote URL automatically.
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="remote-url-display">Full Remote URL (preview)</label>
+        <input type="text" id="remote-url-display" readonly style="background: #f3f4f6; color: var(--muted);" />
+        <div class="help-text">This is the URL that will be saved (token is masked for security)</div>
+      </div>
+      <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+        <button id="save-remote">Save Remote Configuration</button>
+        <button id="load-remote" style="background: var(--muted);">Load Current</button>
+        <button id="test-push" style="background: #059669;">Test Push</button>
+      </div>
+      <div class="help-text" style="margin-top: 8px;">Use "Test Push" to verify your Git credentials are working correctly</div>
+    </div>
+    
+    <div class="card">
+      <div class="section-title">Automatic Push Schedule</div>
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="schedule-enabled" />
+          <label for="schedule-enabled" style="margin: 0;">Enable automatic pushes</label>
+        </div>
+        <div class="help-text">When enabled, changes will be automatically pushed to the remote repository at the configured interval</div>
+      </div>
+      <div class="form-group">
+        <label for="interval-seconds">Push Interval (seconds)</label>
+        <input type="number" id="interval-seconds" value="3600" min="60" step="60" />
+        <div class="help-text">How often to push changes (minimum: 60 seconds)</div>
+      </div>
+      <div class="form-group">
+        <label for="schedule-remote">Remote Name</label>
+        <input type="text" id="schedule-remote" value="origin" placeholder="origin" />
+      </div>
+      <div class="form-group">
+        <label for="schedule-branch">Branch Name</label>
+        <input type="text" id="schedule-branch" value="main" placeholder="main" />
+      </div>
+      <button id="save-schedule">Save Schedule Configuration</button>
+      <button id="load-schedule" style="margin-left: 10px; background: var(--muted);">Load Current</button>
+    </div>
+  </div>
+  
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status');
+    
+    // Get token from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    
+    if (!token) {
+      statusEl.innerHTML = '<div class="status error">Admin token required. Add ?token=YOUR_ADMIN_TOKEN to the URL.</div>';
+    }
+    
+    function addToken(url) {
+      return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+    }
+    
+    function showStatus(message, type = 'info') {
+      statusEl.innerHTML = `<div class="status ${type}">${message}</div>`;
+      setTimeout(() => {
+        statusEl.innerHTML = '';
+      }, 5000);
+    }
+    
+    async function fetchJSON(url, opts = {}) {
+      const res = await fetch(addToken(url), {
+        credentials: 'include',
+        ...opts,
+        headers: {
+          'Content-Type': 'application/json',
+          ...opts.headers,
+        },
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      return res.json();
+    }
+    
+    // Helper function to construct URL with token
+    function constructUrlWithToken(baseUrl, token) {
+      if (!baseUrl) return '';
+      if (!token) return baseUrl;
+      
+      // Parse the URL
+      try {
+        const url = new URL(baseUrl);
+        // Insert token before the hostname
+        // Format: https://token@hostname/path
+        return `${url.protocol}//${token}@${url.host}${url.pathname}${url.search}${url.hash}`;
+      } catch (e) {
+        // If URL parsing fails, try simple string replacement
+        // For URLs like https://github.com/user/repo.git
+        if (baseUrl.startsWith('https://')) {
+          return baseUrl.replace('https://', `https://${token}@`);
+        } else if (baseUrl.startsWith('http://')) {
+          return baseUrl.replace('http://', `http://${token}@`);
+        }
+        return baseUrl;
+      }
+    }
+    
+    // Helper function to extract base URL and token from full URL
+    function parseUrlWithToken(fullUrl) {
+      if (!fullUrl) return { baseUrl: '', token: '' };
+      
+      try {
+        // Try to parse URL with token: https://token@hostname/path
+        const match = fullUrl.match(/^https?:\/\/([^@]+)@(.+)$/);
+        if (match) {
+          return { baseUrl: `https://${match[2]}`, token: match[1] };
+        }
+        // If no token, return as-is
+        return { baseUrl: fullUrl, token: '' };
+      } catch (e) {
+        return { baseUrl: fullUrl, token: '' };
+      }
+    }
+    
+    // Helper function to mask token in URL for display
+    function maskTokenInUrl(url) {
+      if (!url) return '';
+      return url.replace(/(https?:\/\/)([^@]+)@/, '$1****@');
+    }
+    
+    // Update preview when URL or token changes
+    function updateUrlPreview() {
+      const baseUrl = $('remote-url').value.trim();
+      const token = $('remote-token').value.trim();
+      const fullUrl = constructUrlWithToken(baseUrl, token);
+      $('remote-url-display').value = maskTokenInUrl(fullUrl);
+    }
+    
+    // Load remote configuration
+    async function loadRemote() {
+      try {
+        const data = await fetchJSON('/api/admin/remote');
+        $('remote-name').value = data.remote_name || 'origin';
+        
+        // Parse the URL to extract base URL and token
+        const parsed = parseUrlWithToken(data.url || '');
+        $('remote-url').value = parsed.baseUrl;
+        $('remote-token').value = parsed.token;
+        updateUrlPreview();
+        
+        showStatus('Remote configuration loaded', 'success');
+      } catch (e) {
+        showStatus('Failed to load remote: ' + e.message, 'error');
+      }
+    }
+    
+    // Save remote configuration
+    async function saveRemote() {
+      const remoteName = $('remote-name').value.trim();
+      const baseUrl = $('remote-url').value.trim();
+      const token = $('remote-token').value.trim();
+      
+      if (!remoteName) {
+        showStatus('Remote name is required', 'error');
+        return;
+      }
+      
+      if (!baseUrl) {
+        showStatus('Repository URL is required', 'error');
+        return;
+      }
+      
+      // Construct full URL with token if provided
+      const fullUrl = constructUrlWithToken(baseUrl, token);
+      
+      try {
+        await fetchJSON('/api/admin/remote', {
+          method: 'POST',
+          body: JSON.stringify({
+            remote_name: remoteName,
+            url: fullUrl,
+          }),
+        });
+        // Clear token field after saving (for security)
+        $('remote-token').value = '';
+        updateUrlPreview();
+        showStatus('Remote configuration saved successfully', 'success');
+      } catch (e) {
+        showStatus('Failed to save remote: ' + e.message, 'error');
+      }
+    }
+    
+    // Load schedule configuration
+    async function loadSchedule() {
+      try {
+        const data = await fetchJSON('/api/admin/schedule');
+        $('schedule-enabled').checked = data.enabled || false;
+        $('interval-seconds').value = data.interval_seconds || 3600;
+        $('schedule-remote').value = data.remote_name || 'origin';
+        $('schedule-branch').value = data.branch || 'main';
+        showStatus('Schedule configuration loaded', 'success');
+      } catch (e) {
+        showStatus('Failed to load schedule: ' + e.message, 'error');
+      }
+    }
+    
+    // Save schedule configuration
+    async function saveSchedule() {
+      const enabled = $('schedule-enabled').checked;
+      const intervalSeconds = parseInt($('interval-seconds').value, 10);
+      const remoteName = $('schedule-remote').value.trim();
+      const branch = $('schedule-branch').value.trim();
+      
+      if (intervalSeconds < 60) {
+        showStatus('Interval must be at least 60 seconds', 'error');
+        return;
+      }
+      
+      if (!remoteName) {
+        showStatus('Remote name is required', 'error');
+        return;
+      }
+      
+      if (!branch) {
+        showStatus('Branch name is required', 'error');
+        return;
+      }
+      
+      try {
+        await fetchJSON('/api/admin/schedule', {
+          method: 'POST',
+          body: JSON.stringify({
+            enabled,
+            interval_seconds: intervalSeconds,
+            remote_name: remoteName,
+            branch: branch,
+          }),
+        });
+        showStatus('Schedule configuration saved successfully', 'success');
+      } catch (e) {
+        showStatus('Failed to save schedule: ' + e.message, 'error');
+      }
+    }
+    
+    // Test push
+    async function testPush() {
+      const remoteName = $('remote-name').value.trim() || 'origin';
+      const schedule = await fetchJSON('/api/admin/schedule').catch(() => null);
+      const branch = schedule?.branch || $('schedule-branch').value.trim() || 'main';
+      
+      if (!remoteName) {
+        showStatus('Remote name is required', 'error');
+        return;
+      }
+      
+      const testBtn = $('test-push');
+      const originalText = testBtn.textContent;
+      testBtn.disabled = true;
+      testBtn.textContent = 'Testing...';
+      
+      try {
+        const result = await fetchJSON('/api/admin/test-push', {
+          method: 'POST',
+          body: JSON.stringify({
+            remote_name: remoteName,
+            branch: branch,
+          }),
+        });
+        showStatus(`Push test successful! ${result.message || ''}`, 'success');
+      } catch (e) {
+        showStatus('Push test failed: ' + e.message, 'error');
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = originalText;
+      }
+    }
+    
+    // Event listeners
+    $('save-remote').onclick = saveRemote;
+    $('load-remote').onclick = loadRemote;
+    $('test-push').onclick = testPush;
+    $('save-schedule').onclick = saveSchedule;
+    $('load-schedule').onclick = loadSchedule;
+    
+    // Update preview when URL or token changes
+    $('remote-url').addEventListener('input', updateUrlPreview);
+    $('remote-token').addEventListener('input', updateUrlPreview);
+    
+    // Load on page load
+    if (token) {
+      loadRemote();
+      loadSchedule();
+    }
+  </script>
+</body>
+</html>
+

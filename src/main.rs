@@ -49,10 +49,12 @@ struct AppState {
     rooms: Arc<DashMap<String, Arc<Room>>>, // file_key -> room
     data_dir: Arc<PathBuf>,
     auth_token: String,
+    admin_token: String,
     require_token: bool,
     #[cfg(feature = "file-watcher")]
     writing_files: Arc<DashMap<String, Instant>>, // file_key -> timestamp when we started writing
     git_manager: Arc<git_versioning::GitVersionManager>,
+    push_schedule: Arc<RwLock<PushSchedule>>,
 }
 
 struct Room {
@@ -162,6 +164,10 @@ struct Args {
     #[arg(long, env = "DRAWIO_TOKEN")]
     token: Option<String>,
 
+    /// Admin token value; if not provided, a random token is generated at startup
+    #[arg(long, env = "DRAWIO_ADMIN_TOKEN")]
+    admin_token: Option<String>,
+
     /// Port to listen on
     #[arg(long, env = "PORT", default_value_t = 3000)]
     port: u16,
@@ -183,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let auth_token = args.token.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let admin_token = args.admin_token.unwrap_or_else(|| Uuid::new_v4().to_string());
     let require_token = args.require_token;
 
     // Initialize Git version manager
@@ -191,15 +198,25 @@ async fn main() -> anyhow::Result<()> {
             .context("Failed to initialize Git version manager")?
     );
 
+    // Initialize push schedule (default: disabled)
+    let push_schedule = Arc::new(RwLock::new(PushSchedule {
+        enabled: false,
+        interval_seconds: 3600, // 1 hour default
+        remote_name: "origin".to_string(),
+        branch: "main".to_string(),
+    }));
+
     let state = AppState {
         sessions: Arc::new(DashMap::new()),
         rooms: Arc::new(DashMap::new()),
         data_dir: Arc::new(data_dir.clone()),
         auth_token,
+        admin_token,
         require_token,
         #[cfg(feature = "file-watcher")]
         writing_files: Arc::new(DashMap::new()),
         git_manager,
+        push_schedule: push_schedule.clone(),
     };
     
     // Start file watcher task
@@ -210,6 +227,14 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = watch_files(watcher_state, data_dir).await {
                 error!("file watcher error: {e:?}");
             }
+        });
+    }
+
+    // Start scheduled push task
+    {
+        let push_state = state.clone();
+        tokio::spawn(async move {
+            scheduled_push_task(push_state).await;
         });
     }
 
@@ -235,6 +260,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/versions/checkpoint", post(api_checkpoint))
         .route("/api/versions/push", post(api_push_to_remote))
         .route("/api/versions/remote", post(api_set_remote))
+        .route("/admin.html", get(admin_page))
+        .route("/api/admin/remote", get(api_get_remote).post(api_set_remote_admin))
+        .route("/api/admin/schedule", get(api_get_schedule).post(api_set_schedule))
+        .route("/api/admin/test-push", post(api_test_push))
         .route("/raw/:name", get(get_raw_file))
         .route("/ws/:name", get(ws_handler))
         .fallback_service(
@@ -253,7 +282,9 @@ async fn main() -> anyhow::Result<()> {
     info!("listening on http://{addr}");
     info!("require_token: {}", state.require_token);
     info!("token login: http://localhost:{}/auth/token?token={}", args.port, state.auth_token);
+    info!("admin page: http://localhost:{}/admin.html?token={}", args.port, state.admin_token);
     info!("Set DRAWIO_TOKEN/--token to control the token. Current token: {}", state.auth_token);
+    info!("Set DRAWIO_ADMIN_TOKEN/--admin-token to control the admin token. Current admin token: {}", state.admin_token);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -329,6 +360,29 @@ fn get_authorized_user_from_header_or_query(
         }
     }
     None
+}
+
+fn check_admin_token(
+    state: &AppState,
+    headers: &HeaderMap,
+    query: &std::collections::HashMap<String, String>,
+) -> bool {
+    // Header: Authorization: token <ADMIN_TOKEN>
+    if let Some(auth) = headers.get(axum::http::header::AUTHORIZATION).and_then(|h| h.to_str().ok()) {
+        let prefix = "token ";
+        if let Some(rest) = auth.strip_prefix(prefix) {
+            if rest.trim() == state.admin_token {
+                return true;
+            }
+        }
+    }
+    // Query param ?token=...
+    if let Some(t) = query.get("token") {
+        if t == &state.admin_token {
+            return true;
+        }
+    }
+    false
 }
 
 fn set_session_user<'a>(state: &AppState, mut jar: CookieJar, username: &str) -> CookieJar {
@@ -2151,6 +2205,14 @@ struct PushRequest {
     branch: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct PushSchedule {
+    enabled: bool,
+    interval_seconds: u64,
+    remote_name: String,
+    branch: String,
+}
+
 async fn api_list_versions(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -2278,10 +2340,10 @@ async fn api_set_remote(
     State(state): State<AppState>,
     jar: CookieJar,
     headers: HeaderMap,
-    Query(_q): Query<std::collections::HashMap<String, String>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
     Json(req): Json<SetRemoteRequest>,
 ) -> impl IntoResponse {
-    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &_q, &jar) else {
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     
@@ -2302,10 +2364,10 @@ async fn api_push_to_remote(
     State(state): State<AppState>,
     jar: CookieJar,
     headers: HeaderMap,
-    Query(_q): Query<std::collections::HashMap<String, String>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
     Json(req): Json<PushRequest>,
 ) -> impl IntoResponse {
-    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &_q, &jar) else {
+    let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     
@@ -2321,6 +2383,250 @@ async fn api_push_to_remote(
         Err(e) => {
             error!("Failed to push to remote: {e:?}");
             (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to push: {e}")).into_response()
+        }
+    }
+}
+
+// ----- Admin API -----
+
+async fn admin_page(
+    State(state): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+        return (StatusCode::UNAUTHORIZED, "Admin token required").into_response();
+    }
+    
+    // Serve admin HTML page
+    match fs::read("static/admin.html").await {
+        Ok(bytes) => {
+            let mut resp = Response::new(axum::body::Body::from(bytes));
+            resp.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            resp
+        }
+        Err(_) => {
+            // Return 404 if file doesn't exist
+            StatusCode::NOT_FOUND.into_response()
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GetRemoteResponse {
+    remote_name: String,
+    url: String,
+}
+
+async fn api_get_remote(
+    State(state): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    
+    let repo_path = state.data_dir.clone();
+    match tokio::task::spawn_blocking(move || {
+        let repo = git2::Repository::open(repo_path.as_path())
+            .context("Failed to open repository")?;
+        let remote = repo.find_remote("origin")
+            .or_else(|_| repo.remotes().and_then(|remotes| {
+                if remotes.len() > 0 {
+                    repo.find_remote(remotes.get(0).unwrap())
+                } else {
+                    Err(git2::Error::from_str("No remotes found"))
+                }
+            }));
+        
+        match remote {
+            Ok(r) => {
+                let url = r.url().unwrap_or("").to_string();
+                let name = r.name().unwrap_or("origin").to_string();
+                Ok::<GetRemoteResponse, anyhow::Error>(GetRemoteResponse {
+                    remote_name: name,
+                    url,
+                })
+            }
+            Err(_) => Ok(GetRemoteResponse {
+                remote_name: "origin".to_string(),
+                url: "".to_string(),
+            })
+        }
+    }).await {
+        Ok(Ok(resp)) => Json(resp).into_response(),
+        Ok(Err(e)) => {
+            error!("Failed to get remote: {e:?}");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get remote: {e}")).into_response()
+        }
+        Err(e) => {
+            error!("Task error: {e:?}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Task error").into_response()
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SetRemoteAdminRequest {
+    remote_name: String,
+    url: String,
+}
+
+async fn api_set_remote_admin(
+    State(state): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    Json(req): Json<SetRemoteAdminRequest>,
+) -> impl IntoResponse {
+    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    
+    match state.git_manager.set_remote(&req.remote_name, &req.url).await {
+        Ok(_) => Json(serde_json::json!({
+            "remote_name": req.remote_name,
+            "url": req.url,
+            "status": "configured"
+        })).into_response(),
+        Err(e) => {
+            error!("Failed to set remote: {e:?}");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to set remote: {e}")).into_response()
+        }
+    }
+}
+
+async fn api_get_schedule(
+    State(state): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    
+    let schedule = state.push_schedule.read().await.clone();
+    Json(schedule).into_response()
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SetScheduleRequest {
+    enabled: bool,
+    interval_seconds: u64,
+    remote_name: Option<String>,
+    branch: Option<String>,
+}
+
+async fn api_set_schedule(
+    State(state): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    Json(req): Json<SetScheduleRequest>,
+) -> impl IntoResponse {
+    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    
+    let mut schedule = state.push_schedule.write().await;
+    schedule.enabled = req.enabled;
+    schedule.interval_seconds = req.interval_seconds;
+    if let Some(remote) = req.remote_name {
+        schedule.remote_name = remote;
+    }
+    if let Some(branch) = req.branch {
+        schedule.branch = branch;
+    }
+    
+    info!("Push schedule updated: enabled={}, interval={}s, remote={}, branch={}", 
+          schedule.enabled, schedule.interval_seconds, schedule.remote_name, schedule.branch);
+    
+    Json(schedule.clone()).into_response()
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TestPushRequest {
+    remote_name: String,
+    branch: String,
+}
+
+async fn api_test_push(
+    State(state): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    Json(req): Json<TestPushRequest>,
+) -> impl IntoResponse {
+    if !check_admin_token(&state, &HeaderMap::new(), &q) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    
+    info!("Test push requested: remote={}, branch={}", req.remote_name, req.branch);
+    
+    match state.git_manager.push_to_remote(&req.remote_name, &req.branch).await {
+        Ok(_) => {
+            let message = format!("Successfully pushed to {}:{}", req.remote_name, req.branch);
+            info!("Test push successful: {}", message);
+            Json(serde_json::json!({
+                "status": "success",
+                "message": message,
+                "remote": req.remote_name,
+                "branch": req.branch
+            })).into_response()
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to push to {}:{} - {}", req.remote_name, req.branch, e);
+            error!("Test push failed: {}", error_msg);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "message": error_msg,
+                    "remote": req.remote_name,
+                    "branch": req.branch
+                }))
+            ).into_response()
+        }
+    }
+}
+
+// Scheduled push task
+async fn scheduled_push_task(state: AppState) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    
+    let last_push_time = Arc::new(AtomicU64::new(0));
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60)); // Check every minute
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    
+    loop {
+        interval.tick().await;
+        
+        let schedule = state.push_schedule.read().await.clone();
+        if !schedule.enabled {
+            continue;
+        }
+        
+        // Check if enough time has passed since last push
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let last_push = last_push_time.load(Ordering::SeqCst);
+        let time_since_last = now.saturating_sub(last_push);
+        
+        if time_since_last < schedule.interval_seconds {
+            // Not time to push yet
+            continue;
+        }
+        
+        info!("Scheduled push: pushing to {}:{}", schedule.remote_name, schedule.branch);
+        match state.git_manager.push_to_remote(&schedule.remote_name, &schedule.branch).await {
+            Ok(_) => {
+                info!("Scheduled push successful");
+                last_push_time.store(now, Ordering::SeqCst);
+            }
+            Err(e) => {
+                error!("Scheduled push failed: {e:?}");
+                // Still update last push time to avoid retrying immediately
+                // but use a shorter interval (5 minutes) for retries
+                last_push_time.store(now.saturating_sub(schedule.interval_seconds.saturating_sub(300)), Ordering::SeqCst);
+            }
         }
     }
 }
