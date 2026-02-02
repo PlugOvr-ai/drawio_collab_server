@@ -740,18 +740,23 @@
           // Save via WebSocket when connected (preferred - handles versioning and persistence)
           if (ws && ws.readyState === WebSocket.OPEN) {
             selfUpdateToken++;
-            pendingSaveVersion = currentVersion; // Track which version we're saving from
-            ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
+            const saveVersion = currentVersion;
+            pendingSaveVersion = saveVersion; // Track which version we're saving from
+            // Optimistically increment version so rapid subsequent saves use correct version
+            currentVersion++;
+            $('version').textContent = 'v' + currentVersion;
+            ws.send(JSON.stringify({ type: 'replace', version: saveVersion, content: xml, self: selfUpdateToken }));
             // WebSocket handler persists to disk and broadcasts; status will update when we get confirmation
             // Don't show "Saved" yet - wait for broadcast confirmation or conflict response
             return;
           }
           // Fallback: HTTP PUT only when WebSocket is not available
+          const saveVersion = currentVersion;
           const resp = await fetch(addTokenToUrl(`/api/file?path=${encodeURIComponent(filePath)}`), {
             method: 'PUT',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: xml, version: currentVersion }),
+            body: JSON.stringify({ content: xml, version: saveVersion }),
           });
           // Check for version conflict
           if (resp.ok || resp.status === 200) {
@@ -770,6 +775,9 @@
               setTimeout(() => { $('status').textContent = 'Connected'; }, 1500);
               return;
             }
+            // Success - increment version (we'll also get WS broadcast but that's fine)
+            currentVersion = saveVersion + 1;
+            $('version').textContent = 'v' + currentVersion;
           }
           if (!resp.ok) {
             const msg = await resp.text();
@@ -799,18 +807,23 @@
               // Save via WebSocket when connected (preferred - handles versioning and persistence)
               if (ws && ws.readyState === WebSocket.OPEN) {
                 selfUpdateToken++;
-                pendingSaveVersion = currentVersion; // Track which version we're saving from
-                ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
+                const saveVersion = currentVersion;
+                pendingSaveVersion = saveVersion; // Track which version we're saving from
+                // Optimistically increment version so rapid subsequent saves use correct version
+                currentVersion++;
+                $('version').textContent = 'v' + currentVersion;
+                ws.send(JSON.stringify({ type: 'replace', version: saveVersion, content: xml, self: selfUpdateToken }));
                 // WebSocket handler persists to disk and broadcasts; status will update when we get confirmation
                 // Don't show "Saved" yet - wait for broadcast confirmation or conflict response
                 return;
               }
               // Fallback: HTTP PUT only when WebSocket is not available
+              const saveVersion = currentVersion;
               const resp = await fetch(addTokenToUrl(`/api/file?path=${encodeURIComponent(filePath)}`), {
                 method: 'PUT',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: xml, version: currentVersion }),
+                body: JSON.stringify({ content: xml, version: saveVersion }),
               });
               // Check for version conflict
               if (resp.ok || resp.status === 200) {
@@ -829,6 +842,9 @@
                   setTimeout(() => { $('status').textContent = 'Connected'; }, 1500);
                   return;
                 }
+                // Success - increment version
+                currentVersion = saveVersion + 1;
+                $('version').textContent = 'v' + currentVersion;
               }
               if (!resp.ok) {
                 const msg = await resp.text();
