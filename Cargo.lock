@@ -435,7 +435,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "drawioserver"
+name = "drawio_server"
 version = "0.1.0"
 dependencies = [
  "anyhow",

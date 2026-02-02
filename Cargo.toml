@@ -1,5 +1,5 @@
 [package]
-name = "drawioserver"
+name = "drawio_server"
 version = "0.1.0"
 edition = "2021"
 
@@ -35,4 +35,3 @@ file-watcher = ["dep:notify"]
 [dependencies.notify]
 version = "6"
 optional = true
-

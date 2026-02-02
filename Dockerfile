@@ -43,7 +43,7 @@ COPY static/drawio.html static/index.html static/token.html static/
 
 
 # Copy the binary from builder
-COPY --from=builder /app/target/release/drawioserver /app/drawioserver
+COPY --from=builder /app/target/release/drawio_server /app/drawio_server
 
 # Create data directory
 RUN mkdir -p data
@@ -56,5 +56,5 @@ ENV PORT=3000
 ENV DATA_DIR=data
 
 # Run the server
-CMD ["./drawioserver"]
+CMD ["./drawio_server"]
 
