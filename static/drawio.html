@@ -1,50 +1,129 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Drawio Collaboration</title>
   <style>
-    html, body { height: 100%; margin: 0; background: #ffffff; color: #111827; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
-    header { padding: 10px 12px; background: #f8fafc; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; }
-    .row { display: flex; gap: 8px; align-items: center; }
-    .badge { padding: 2px 6px; border-radius: 100px; background: #eef2ff; color: #1e3a8a; font-size: 12px; }
-    #editor { width: 100%; height: calc(100% - 48px); border: 0; display: block; }
-    button, a { background: #ffffff; color: #111827; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; text-decoration: none; }
-    #stage { position: relative; width: 100%; height: calc(100% - 48px); }
-    #overlay { position: absolute; inset: 0; pointer-events: none; }
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: #ffffff;
+      color: #111827;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+
+    header {
+      padding: 10px 12px;
+      background: #f8fafc;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .badge {
+      padding: 2px 6px;
+      border-radius: 100px;
+      background: #eef2ff;
+      color: #1e3a8a;
+      font-size: 12px;
+    }
+
+    #editor {
+      width: 100%;
+      height: calc(100% - 48px);
+      border: 0;
+      display: block;
+    }
+
+    button,
+    a {
+      background: #ffffff;
+      color: #111827;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 8px 10px;
+      text-decoration: none;
+    }
+
+    #stage {
+      position: relative;
+      width: 100%;
+      height: calc(100% - 48px);
+    }
+
+    #overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
     .cursor {
       position: absolute;
       transform: translate(-50%, -50%);
-      background: rgba(0,0,0,0);
+      background: rgba(0, 0, 0, 0);
       pointer-events: none;
     }
+
     .cursor .dot {
-      width: 10px; height: 10px; border-radius: 50%;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
       border: 2px solid white;
-      box-shadow: 0 0 0 2px rgba(0,0,0,0.4);
+      box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.4);
     }
+
     .cursor .label {
-      position: absolute; top: 12px; left: 8px;
-      padding: 2px 6px; font-size: 11px; border-radius: 6px;
-      background: rgba(255,255,255,0.9); color: #111827; border: 1px solid #e5e7eb;
+      position: absolute;
+      top: 12px;
+      left: 8px;
+      padding: 2px 6px;
+      font-size: 11px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.9);
+      color: #111827;
+      border: 1px solid #e5e7eb;
       white-space: nowrap;
     }
+
     .cursor .sel {
-      position: absolute; top: -16px; left: 8px;
-      padding: 1px 6px; font-size: 10px; border-radius: 6px;
-      background: rgba(255,255,255,0.9); color: #374151; border: 1px solid #e5e7eb;
+      position: absolute;
+      top: -16px;
+      left: 8px;
+      padding: 1px 6px;
+      font-size: 10px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.9);
+      color: #374151;
+      border: 1px solid #e5e7eb;
       white-space: nowrap;
       display: none;
     }
+
     .cursor .sel {
-      position: absolute; top: -16px; left: 8px;
-      padding: 1px 6px; font-size: 10px; border-radius: 6px;
-      background: rgba(255,255,255,0.9); color: #374151; border: 1px solid #e5e7eb;
+      position: absolute;
+      top: -16px;
+      left: 8px;
+      padding: 1px 6px;
+      font-size: 10px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.9);
+      color: #374151;
+      border: 1px solid #e5e7eb;
       white-space: nowrap;
     }
   </style>
 </head>
+
 <body>
   <header>
     <div class="row">
@@ -54,27 +133,33 @@
       <span class="badge" id="version">v0</span>
     </div>
     <div class="row">
-      <input type="text" id="commit-message" placeholder="Commit message (optional)" style="padding: 6px 10px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; width: 200px;" />
+      <input type="text" id="commit-message" placeholder="Commit message (optional)"
+        style="padding: 6px 10px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; width: 200px;" />
       <button id="commit-btn">Commit</button>
       <a href="/" id="back">Back</a>
       <button id="ai-open">AI Modify</button>
     </div>
   </header>
   <div id="stage">
-    <iframe id="editor" allow="fullscreen" src="/diagrams/index.html?embed=1&ui=min&proto=json&spin=1&noDevice=1&saveAndExit=1&xml=1"></iframe>
+    <iframe id="editor" allow="fullscreen"
+      src="/diagrams/index.html?embed=1&ui=min&proto=json&spin=1&noDevice=1&saveAndExit=1&xml=1"></iframe>
     <div id="overlay"></div>
   </div>
-  <div id="ai-activity" style="display:none; position: fixed; right: 12px; top: 60px; width: 320px; max-height: 40vh; overflow: auto; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); z-index: 80;">
+  <div id="ai-activity"
+    style="display:none; position: fixed; right: 12px; top: 60px; width: 320px; max-height: 40vh; overflow: auto; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); z-index: 80;">
     <div style="display:flex; align-items:center; justify-content: space-between; margin-bottom: 6px;">
       <strong style="font-size: 13px;">AI activity</strong>
       <button id="ai-activity-close" style="font-size:12px;">Hide</button>
     </div>
     <div id="ai-activity-log" style="font-size: 12px; color:#374151; display:grid; gap:4px;"></div>
-    <pre id="ai-activity-stream" style="margin-top:6px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:8px; font-size:12px; color:#111827; white-space:pre-wrap; word-break:break-word; max-height:22vh; overflow:auto;"></pre>
+    <pre id="ai-activity-stream"
+      style="margin-top:6px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:8px; font-size:12px; color:#111827; white-space:pre-wrap; word-break:break-word; max-height:22vh; overflow:auto;"></pre>
   </div>
   <!-- AI Modal -->
-  <div id="ai-backdrop" style="display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 60;"></div>
-  <div id="ai-modal" style="display:none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(720px, 94vw); background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; z-index: 70;">
+  <div id="ai-backdrop" style="display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 60;">
+  </div>
+  <div id="ai-modal"
+    style="display:none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(720px, 94vw); background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; z-index: 70;">
     <div style="display:flex; align-items:center; justify-content: space-between; margin-bottom: 8px;">
       <strong>AI Modify Diagram</strong>
       <button id="ai-close">Close</button>
@@ -105,12 +190,15 @@
       </div>
       <label style="display:grid; gap:4px;">
         <span style="font-size:12px; color:#6b7280;">Instruction</span>
-        <textarea id="ai-prompt" rows="8" placeholder="Describe how to modify the diagram (add nodes/edges, rename, layout changes, etc.)" style="width:100%;"></textarea>
+        <textarea id="ai-prompt" rows="8"
+          placeholder="Describe how to modify the diagram (add nodes/edges, rename, layout changes, etc.)"
+          style="width:100%;"></textarea>
       </label>
       <div style="display:flex; gap:8px; justify-content:flex-end;">
         <button id="ai-run">Run</button>
       </div>
-      <div id="ai-hint" style="font-size:12px; color:#6b7280;">OpenRouter requires environment variable OPENROUTER_API_KEY on the server. Ollama defaults to http://localhost:11434 (override with OLLAMA_URL).</div>
+      <div id="ai-hint" style="font-size:12px; color:#6b7280;">OpenRouter requires environment variable
+        OPENROUTER_API_KEY on the server. Ollama defaults to http://localhost:11434 (override with OLLAMA_URL).</div>
     </div>
   </div>
   <script>
@@ -118,7 +206,7 @@
     const params = new URLSearchParams(location.search);
     const filePath = params.get('path') || params.get('name');
     $('file').textContent = filePath || '(no file)';
-    
+
     // Store token from URL if present
     const urlToken = params.get('token');
     if (urlToken) {
@@ -128,7 +216,7 @@
       url.searchParams.delete('token');
       history.replaceState({}, '', url);
     }
-    
+
     // Set back button with token
     const storedToken = localStorage.getItem('drawio_token');
     $('back').href = storedToken ? `/?token=${encodeURIComponent(storedToken)}` : '/';
@@ -145,7 +233,9 @@
     const aiJobs = new Map(); // job_id -> {lastPhase, createdAt}
     let backgroundPagePosition = null; // Stores geBackgroundPage position for cursor offset correction
     let receiverViewState = null; // Stores receiver's view state (scale, translate) for coordinate conversion
-    
+    let pendingSaveVersion = null; // Track pending save to confirm when broadcast returns
+    let isLoadingContent = false; // Prevent saves while loading content from server
+
     // Helper function to add token to URLs
     function addTokenToUrl(url) {
       const storedToken = localStorage.getItem('drawio_token');
@@ -172,7 +262,7 @@
             }, 1500);
           }
         }
-      } catch {}
+      } catch { }
     }
 
     async function loadInitial() {
@@ -211,7 +301,7 @@
       }
       ws = new WebSocket(wsUrl);
       ws.onopen = () => { $('status').textContent = 'Connected'; };
-      ws.onclose = (evt) => { 
+      ws.onclose = (evt) => {
         $('status').textContent = 'Disconnected';
         // If connection closed with 1008 (policy violation, usually auth failure), redirect to login
         if (evt.code === 1008 || evt.code === 1002 || evt.code === 1003) {
@@ -221,7 +311,7 @@
           }, 1500);
         }
       };
-      ws.onerror = (evt) => { 
+      ws.onerror = (evt) => {
         $('status').textContent = 'Connection error';
         // WebSocket connection failed - likely authentication issue
         // Wait a moment to see if we get more info, then check if it's auth
@@ -250,10 +340,14 @@
             currentVersion = msg.version || 0;
             $('version').textContent = 'v' + currentVersion;
             lastXml = msg.content || '';
+            pendingSaveVersion = null; // Clear any pending save from before reconnect
+            isLoadingContent = true; // Prevent saves until editor loads content
             if (msg.your_id) { myClientId = msg.your_id; }
             if (isEditorReady) {
               postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
             }
+            // Clear loading flag after editor has time to load (fallback timeout)
+            setTimeout(() => { isLoadingContent = false; }, 500);
           } else if (msg.type === 'presence_snapshot') {
             for (const u of msg.users || []) {
               ensureCursor(u.username, u.color);
@@ -277,14 +371,24 @@
             }
           } else if (msg.type === 'update') {
             const fromSelf = (msg.sender_id && myClientId && msg.sender_id === myClientId) || false;
-            if (fromSelf) { return; }
+            // Always update our version tracker (even for self updates) to stay in sync
             currentVersion = msg.version || currentVersion;
             $('version').textContent = 'v' + currentVersion;
+            // For self updates: confirm pending save was successful
+            if (fromSelf) {
+              if (pendingSaveVersion !== null) {
+                pendingSaveVersion = null;
+                $('status').textContent = 'Saved';
+                postToEditor({ action: 'status', modified: false });
+              }
+              return; // Skip content reload for our own updates (we already have the content)
+            }
             if (msg.content && msg.content !== lastXml) {
               const isAiUpdate = msg.username === 'ai';
               const isExternalUpdate = msg.username === 'external';
               //console.log(`[WS] Update from ${msg.username}, isAI: ${isAiUpdate}, isExternal: ${isExternalUpdate}, content length: ${msg.content.length}, prev length: ${lastXml.length}`);
               lastXml = msg.content;
+              isLoadingContent = true; // Prevent saves while loading external content
               // For AI updates and external updates, always reload (not merge) since content is completely regenerated
               // For human updates, try merge first, then fallback to reload
               if (isAiUpdate) {
@@ -294,6 +398,7 @@
                 postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
                 // Show visual feedback
                 setTimeout(() => {
+                  isLoadingContent = false;
                   $('status').textContent = 'AI update applied';
                   setTimeout(() => { $('status').textContent = 'Connected'; }, 2000);
                 }, 500);
@@ -304,6 +409,7 @@
                 postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
                 // Show visual feedback
                 setTimeout(() => {
+                  isLoadingContent = false;
                   $('status').textContent = 'External change applied';
                   setTimeout(() => { $('status').textContent = 'Connected'; }, 2000);
                 }, 500);
@@ -314,12 +420,33 @@
                 } catch {
                   postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
                 }
+                setTimeout(() => { isLoadingContent = false; }, 300);
               }
             } else {
               // console.log(`[WS] Update ignored: content same or empty (same: ${msg.content === lastXml})`);
             }
           } else if (msg.type === 'ai_status') {
             addAiActivity(msg.job_id, msg.phase, msg.detail);
+          } else if (msg.type === 'conflict') {
+            // Version conflict: our save was rejected because we had a stale version
+            // The server sent us the current content - we must reload to sync
+            console.warn(`Version conflict: had v${msg.client_version}, server has v${msg.server_version}`);
+            pendingSaveVersion = null; // Clear pending save - it was rejected
+            isLoadingContent = true; // Prevent saves while loading server content
+            currentVersion = msg.server_version;
+            $('version').textContent = 'v' + currentVersion;
+            lastXml = msg.content || '';
+            $('status').textContent = 'Syncing...';
+            // Reload the editor with the server's current content
+            if (isEditorReady) {
+              postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
+              postToEditor({ action: 'status', modified: false }); // Clear modified flag after reload
+            }
+            // Show visual feedback
+            setTimeout(() => {
+              isLoadingContent = false;
+              $('status').textContent = 'Connected';
+            }, 1500);
           }
         } catch (e) {
           //console.error('bad ws message', e, ev.data);
@@ -384,9 +511,9 @@
       }
       const row = document.createElement('div');
       const t = new Date();
-      const hh = `${t.getHours()}`.padStart(2,'0');
-      const mm = `${t.getMinutes()}`.padStart(2,'0');
-      const ss = `${t.getSeconds()}`.padStart(2,'0');
+      const hh = `${t.getHours()}`.padStart(2, '0');
+      const mm = `${t.getMinutes()}`.padStart(2, '0');
+      const ss = `${t.getSeconds()}`.padStart(2, '0');
       const stamp = `${hh}:${mm}:${ss}`;
       row.textContent = `[${stamp}] ${phase}: ${detail}`;
       aiActivityLog.appendChild(row);
@@ -429,11 +556,11 @@
         if (!res.ok) throw new Error(await res.text());
         const out = await res.json();
         // The server will broadcast via WS; but in case no WS, apply locally.
-          if (!ws || ws.readyState !== WebSocket.OPEN) {
-            lastXml = out.content || '';
-            postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
-            $('version').textContent = 'v' + (out.version || currentVersion);
-          }
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          lastXml = out.content || '';
+          postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
+          $('version').textContent = 'v' + (out.version || currentVersion);
+        }
         $('status').textContent = 'AI applied';
         closeAi();
         addAiActivity('local', 'completed', 'Applied changes');
@@ -451,7 +578,7 @@
       try {
         const childWin = iframe.contentWindow;
         if (!childWin) return;
-        
+
         // Try to get graph view state
         let graph = null;
         if (typeof childWin.EditorUi !== 'undefined' && childWin.EditorUi.currentEditor) {
@@ -459,7 +586,7 @@
         } else if (typeof childWin.App !== 'undefined' && childWin.App.ui && childWin.App.ui.editor) {
           graph = childWin.App.ui.editor.graph;
         }
-        
+
         if (graph && graph.view) {
           receiverViewState = {
             scale: graph.view.scale || 1,
@@ -471,10 +598,10 @@
         // Not accessible; ignore
       }
     }
-    
+
     // Update receiver view state periodically
     setInterval(updateReceiverViewState, 500);
-    
+
     // If the iframe is same-origin (when you self-host draw.io), attach direct mouse tracking for precise cursors
     function attachSameOriginMouseTracking() {
       const iframe = $('editor');
@@ -489,7 +616,7 @@
           const now = performance.now();
           if (now - lastSentLocal < 33) return;
           lastSentLocal = now;
-          
+
           // Get absolute coordinates relative to geBackgroundPage origin
           const backgroundPage = childDoc.querySelector('.geBackgroundPage');
           if (backgroundPage) {
@@ -500,7 +627,7 @@
             // Send absolute coordinates directly (no normalization)
             //console.log('SEND TO WS: cursor', absoluteX, absoluteY);
             ws.send(JSON.stringify({ type: 'cursor', x: absoluteX, y: absoluteY }));
-          } 
+          }
         }, { passive: true });
         // Also update view state when tracking is attached
         updateReceiverViewState();
@@ -524,7 +651,7 @@
       if (data.event === 'backgroundPagePosition') {
         backgroundPagePosition = data;
         //console.log('Background page position updated:', backgroundPagePosition);
-        
+
         // Verify the position by getting it directly from iframe (for debugging)
         try {
           const iframe = $('editor');
@@ -534,17 +661,17 @@
             const directRect = bgPage.getBoundingClientRect();
             const iframeRect = iframe.getBoundingClientRect();
             //console.log('Direct verification:', {
-             // fromMessage: { clientLeft: data.clientLeft, clientTop: data.clientTop },
-             // directFromIframe: { left: directRect.left, top: directRect.top },
-             // iframeRect: { left: iframeRect.left, top: iframeRect.top },
-             // diff: {
-             //   left: directRect.left - data.clientLeft,
-             //   top: directRect.top - data.clientTop
-             // }
+            // fromMessage: { clientLeft: data.clientLeft, clientTop: data.clientTop },
+            // directFromIframe: { left: directRect.left, top: directRect.top },
+            // iframeRect: { left: iframeRect.left, top: iframeRect.top },
+            // diff: {
+            //   left: directRect.left - data.clientLeft,
+            //   top: directRect.top - data.clientTop
+            // }
             //});
           }
         } catch (e) {
-         // console.log('Could not verify backgroundPage position:', e);
+          // console.log('Could not verify backgroundPage position:', e);
         }
         return;
       }
@@ -558,7 +685,7 @@
         // Request event stream (selection/mouse) from embed
         try {
           postToEditor({ action: 'configure', config: { listen: true, events: true, eventsEnabled: true } });
-        } catch {}
+        } catch { }
         // Try to attach direct listeners if same-origin
         attachSameOriginMouseTracking();
         return;
@@ -570,7 +697,7 @@
             const ids = data.cells.map(c => (c && typeof c === 'object') ? (c.id || '') : (typeof c === 'string' ? c : '')).filter(Boolean);
             ws.send(JSON.stringify({ type: 'selection', ids }));
           }
-        } catch {}
+        } catch { }
       }
       // Mouse move events from embed; forward if present
       if ((data.event === 'mouseMove' || data.event === 'mousemove' || data.action === 'mouseMove')) {
@@ -587,7 +714,7 @@
               lastEmbedMoveAt = performance.now();
             }
           }
-        } catch {}
+        } catch { }
       }
       // Debug: log all messages to see what we're receiving
       if (data.event === 'backgroundPagePosition' || data.event === 'mouseMove') {
@@ -595,6 +722,11 @@
       }
       // The editor asks us to save current XML
       if (data.event === 'save' || data.action === 'save' || data.event === 'autosave') {
+        // Skip saves while loading content from server to prevent race conditions
+        if (isLoadingContent) {
+          console.log('Skipping save while loading content from server');
+          return;
+        }
         try {
           $('status').textContent = 'Saving...';
           let xml = data.xml || '';
@@ -605,18 +737,40 @@
             return; // continue when we receive export
           }
           lastXml = xml;
-          // Broadcast via WS
+          // Save via WebSocket when connected (preferred - handles versioning and persistence)
           if (ws && ws.readyState === WebSocket.OPEN) {
             selfUpdateToken++;
+            pendingSaveVersion = currentVersion; // Track which version we're saving from
             ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
+            // WebSocket handler persists to disk and broadcasts; status will update when we get confirmation
+            // Don't show "Saved" yet - wait for broadcast confirmation or conflict response
+            return;
           }
-          // Persist via HTTP (no automatic commit)
+          // Fallback: HTTP PUT only when WebSocket is not available
           const resp = await fetch(addTokenToUrl(`/api/file?path=${encodeURIComponent(filePath)}`), {
             method: 'PUT',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: xml }),
+            body: JSON.stringify({ content: xml, version: currentVersion }),
           });
+          // Check for version conflict
+          if (resp.ok || resp.status === 200) {
+            const result = await resp.json().catch(() => null);
+            if (result && result.error === 'version_conflict') {
+              // Version conflict - reload with server content
+              console.warn(`HTTP PUT version conflict: had v${result.client_version}, server has v${result.server_version}`);
+              currentVersion = result.server_version;
+              $('version').textContent = 'v' + currentVersion;
+              lastXml = result.content || '';
+              $('status').textContent = 'Syncing...';
+              if (isEditorReady) {
+                postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
+                postToEditor({ action: 'status', modified: false });
+              }
+              setTimeout(() => { $('status').textContent = 'Connected'; }, 1500);
+              return;
+            }
+          }
           if (!resp.ok) {
             const msg = await resp.text();
             $('status').textContent = `Save failed: ${msg || resp.status}`;
@@ -642,17 +796,40 @@
           (async () => {
             try {
               lastXml = xml;
+              // Save via WebSocket when connected (preferred - handles versioning and persistence)
               if (ws && ws.readyState === WebSocket.OPEN) {
                 selfUpdateToken++;
+                pendingSaveVersion = currentVersion; // Track which version we're saving from
                 ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
+                // WebSocket handler persists to disk and broadcasts; status will update when we get confirmation
+                // Don't show "Saved" yet - wait for broadcast confirmation or conflict response
+                return;
               }
-              // Persist via HTTP (no automatic commit)
+              // Fallback: HTTP PUT only when WebSocket is not available
               const resp = await fetch(addTokenToUrl(`/api/file?path=${encodeURIComponent(filePath)}`), {
                 method: 'PUT',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: xml }),
+                body: JSON.stringify({ content: xml, version: currentVersion }),
               });
+              // Check for version conflict
+              if (resp.ok || resp.status === 200) {
+                const result = await resp.json().catch(() => null);
+                if (result && result.error === 'version_conflict') {
+                  // Version conflict - reload with server content
+                  console.warn(`HTTP PUT version conflict: had v${result.client_version}, server has v${result.server_version}`);
+                  currentVersion = result.server_version;
+                  $('version').textContent = 'v' + currentVersion;
+                  lastXml = result.content || '';
+                  $('status').textContent = 'Syncing...';
+                  if (isEditorReady) {
+                    postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
+                    postToEditor({ action: 'status', modified: false });
+                  }
+                  setTimeout(() => { $('status').textContent = 'Connected'; }, 1500);
+                  return;
+                }
+              }
               if (!resp.ok) {
                 const msg = await resp.text();
                 $('status').textContent = `Save failed: ${msg || resp.status}`;
@@ -733,7 +910,7 @@
       const overlay = $('overlay');
       const rect = overlay.getBoundingClientRect();
       let x, y;
-      
+
       // If basis is not 'stage', assume nx/ny are absolute coordinates relative to geBackgroundPage origin
       if (basis === 'stage') {
         const s = getOverlayStageRect();
@@ -752,14 +929,14 @@
           const iframeRect = iframe.getBoundingClientRect();
           const bgPageClientLeft = backgroundPagePosition.clientLeft || 0;
           const bgPageClientTop = backgroundPagePosition.clientTop || 0;
-          
+
           // Add receiver's geBackgroundPage position to absolute coordinates
           // bgPageClientLeft/Top are relative to iframe viewport
           // iframeRect.left/top are relative to parent viewport
           // So we add: parent viewport position of iframe + iframe viewport position of bgPage + absolute coord
-          x =  bgPageClientLeft + nx;
-          y =  bgPageClientTop + ny;
-         // console.log('moveCursor debug:', {
+          x = bgPageClientLeft + nx;
+          y = bgPageClientTop + ny;
+          // console.log('moveCursor debug:', {
           //  username,
           //  absoluteCoord: { nx, ny },
           //  iframeRect: { left: iframeRect.left, top: iframeRect.top },
@@ -768,8 +945,8 @@
           //});
           // Debug logging (occasionally to avoid spam)
           if (Math.random() < 0.01) {
-           // console.log('moveCursor debug:', {
-             // username,
+            // console.log('moveCursor debug:', {
+            // username,
             //  absoluteCoord: { nx, ny },
             //  iframeRect: { left: iframeRect.left, top: iframeRect.top },
             //  bgPagePos: { left: bgPageClientLeft, top: bgPageClientTop },
@@ -782,7 +959,7 @@
           y = ny * rect.height;
         }
       }
-      
+
       c.el.style.left = x + 'px';
       c.el.style.top = y + 'px';
     }
@@ -800,7 +977,7 @@
       const y = e.clientY - rect.top;
       if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
       lastSent = now;
-      
+
       // Try to get absolute coordinates relative to geBackgroundPage origin
       const iframe = $('editor');
       try {
@@ -834,13 +1011,13 @@
         $('status').textContent = 'No file to commit';
         return;
       }
-      
+
       const commitMessage = $('commit-message').value.trim();
-      
+
       try {
         $('status').textContent = 'Saving and committing...';
         $('commit-btn').disabled = true;
-        
+
         // First, save the current content to ensure it's up to date
         // Get current content from editor
         let xml = lastXml;
@@ -856,28 +1033,44 @@
                   window.removeEventListener('message', handler);
                   resolve(data.data || data.xml || '');
                 }
-              } catch {}
+              } catch { }
             };
             window.addEventListener('message', handler);
             postToEditor({ action: 'export', format: 'xml' });
           });
           xml = await exportPromise;
         }
-        
-        // Save the file first to update the room
+
+        // Save the file first to update the room (with version check)
         const saveResp = await fetch(addTokenToUrl(`/api/file?path=${encodeURIComponent(filePath)}`), {
           method: 'PUT',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: xml }),
+          body: JSON.stringify({ content: xml, version: currentVersion }),
         });
-        
+
+        // Check for version conflict
+        if (saveResp.ok || saveResp.status === 200) {
+          const saveResult = await saveResp.json().catch(() => null);
+          if (saveResult && saveResult.error === 'version_conflict') {
+            console.warn(`Commit version conflict: had v${saveResult.client_version}, server has v${saveResult.server_version}`);
+            currentVersion = saveResult.server_version;
+            $('version').textContent = 'v' + currentVersion;
+            lastXml = saveResult.content || '';
+            $('status').textContent = 'Version conflict - please retry';
+            if (isEditorReady) {
+              postToEditor({ action: 'load', autosave: 1, xml: lastXml, title: filePath });
+              postToEditor({ action: 'status', modified: false });
+            }
+            return;
+          }
+        }
         if (!saveResp.ok) {
           const msg = await saveResp.text();
           $('status').textContent = `Save failed: ${msg || saveResp.status}`;
           return;
         }
-        
+
         // Now create the commit
         const resp = await fetch(addTokenToUrl(`/api/versions/checkpoint?path=${encodeURIComponent(filePath)}`), {
           method: 'POST',
@@ -885,13 +1078,13 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: commitMessage || undefined }),
         });
-        
+
         if (!resp.ok) {
           const msg = await resp.text();
           $('status').textContent = `Commit failed: ${msg || resp.status}`;
           return;
         }
-        
+
         const result = await resp.json();
         $('status').textContent = 'Committed';
         $('commit-message').value = ''; // Clear message field
@@ -906,7 +1099,7 @@
         $('commit-btn').disabled = false;
       }
     });
-    
+
     // Allow Enter key in commit message to trigger commit
     $('commit-message').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -919,6 +1112,5 @@
     loadInitial().then(connectWS);
   </script>
 </body>
+
 </html>
-
-

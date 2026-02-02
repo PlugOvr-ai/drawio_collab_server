@@ -9,21 +9,30 @@ use std::{
     },
 };
 
+use anyhow::Context;
 use axum::{
     extract::{
         ws::{Message as WsRawMessage, WebSocket, WebSocketUpgrade},
-        Path as AxumPath, Query, State, Multipart, DefaultBodyLimit,
+        DefaultBodyLimit, Multipart, Path as AxumPath, Query, State,
     },
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response, Redirect},
-    routing::{get, post, put, delete, get_service},
+    response::{IntoResponse, Redirect, Response},
+    routing::{delete, get, get_service, post, put},
     Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
+use clap::Parser;
 use dashmap::DashMap;
 use futures::{sink::SinkExt, stream::StreamExt};
+#[cfg(feature = "file-watcher")]
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use percent_encoding::percent_decode_str;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "file-watcher")]
+use std::collections::HashMap;
+#[cfg(feature = "file-watcher")]
+use std::time::{Duration, Instant};
 use tokio::{
     fs,
     io::AsyncWriteExt,
@@ -33,15 +42,6 @@ use tokio_stream::wrappers::BroadcastStream;
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use tracing::{error, info, Level};
 use uuid::Uuid;
-use clap::Parser;
-use reqwest::Client;
-#[cfg(feature = "file-watcher")]
-use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind, Config};
-#[cfg(feature = "file-watcher")]
-use std::collections::HashMap;
-#[cfg(feature = "file-watcher")]
-use std::time::{Duration, Instant};
-use anyhow::Context;
 
 #[derive(Clone)]
 struct AppState {
@@ -67,25 +67,73 @@ struct Room {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientWsMessage {
-    Replace { version: u64, content: String },
+    Replace {
+        version: u64,
+        content: String,
+    },
     Ping,
-    Cursor { x: f32, y: f32, basis: Option<String> }, // basis: "stage" or "overlay"
-    Selection { ids: Vec<String> },
+    Cursor {
+        x: f32,
+        y: f32,
+        basis: Option<String>,
+    }, // basis: "stage" or "overlay"
+    Selection {
+        ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerWsMessage {
-    Init { version: u64, content: String, your_id: String },
-    Update { version: u64, content: String, username: String, sender_id: String },
-    Error { message: String },
+    Init {
+        version: u64,
+        content: String,
+        your_id: String,
+    },
+    Update {
+        version: u64,
+        content: String,
+        username: String,
+        sender_id: String,
+    },
+    Error {
+        message: String,
+    },
+    /// Sent when a client tries to save with an outdated version (optimistic concurrency conflict)
+    Conflict {
+        server_version: u64,
+        client_version: u64,
+        content: String,
+    },
     Pong,
-    PresenceSnapshot { users: Vec<PresenceUser> },
-    PresenceJoin { username: String, color: String },
-    PresenceLeave { username: String },
-    Cursor { username: String, x: f32, y: f32, basis: Option<String>, sender_id: String },
-    Selection { username: String, ids: Vec<String>, sender_id: String },
-    AiStatus { username: String, job_id: String, phase: String, detail: String },
+    PresenceSnapshot {
+        users: Vec<PresenceUser>,
+    },
+    PresenceJoin {
+        username: String,
+        color: String,
+    },
+    PresenceLeave {
+        username: String,
+    },
+    Cursor {
+        username: String,
+        x: f32,
+        y: f32,
+        basis: Option<String>,
+        sender_id: String,
+    },
+    Selection {
+        username: String,
+        ids: Vec<String>,
+        sender_id: String,
+    },
+    AiStatus {
+        username: String,
+        job_id: String,
+        phase: String,
+        detail: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -113,6 +161,8 @@ struct SetNameRequest {
 #[derive(Debug, Serialize, Deserialize)]
 struct FileWriteRequest {
     content: String,
+    #[serde(default)]
+    version: Option<u64>, // Optional version for optimistic concurrency control
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -189,13 +239,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let auth_token = args.token.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let admin_token = args.admin_token.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let admin_token = args
+        .admin_token
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let require_token = args.require_token;
 
     // Initialize Git version manager
     let git_manager = Arc::new(
         git_versioning::GitVersionManager::new(data_dir.clone())
-            .context("Failed to initialize Git version manager")?
+            .context("Failed to initialize Git version manager")?,
     );
 
     // Initialize push schedule (default: disabled)
@@ -219,7 +271,7 @@ async fn main() -> anyhow::Result<()> {
         git_manager,
         push_schedule: push_schedule.clone(),
     };
-    
+
     // Start file watcher task
     #[cfg(feature = "file-watcher")]
     {
@@ -239,60 +291,87 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let app = Router::new()
-        .route("/", get(root_page))
-        .route("/healthz", get(health))
-        .route("/login", post(login))
-        .route("/logout", post(logout))
-        .route("/auth/token", get(token_login))
-    .route("/me", get(me).put(put_me))
-        .route("/files", get(list_files))
-        .route("/files/:name", get(get_file).put(put_file).delete(delete_file))
-        .route("/files/:name/rename", post(rename_file))
-        // New query-based API for folders and downloads
-        .route("/api/list", get(api_list))
-        .route("/api/file", get(api_get_file).put(api_put_file).delete(api_delete_file))
-        .route("/api/rename", post(api_rename))
-        .route("/api/mkdir", post(api_mkdir))
-        .route("/api/download", get(api_download))
-        .route("/api/upload", post(api_upload))
-        .route("/api/ai_modify", post(api_ai_modify))
-        .route("/api/versions", get(api_list_versions).post(api_restore_version))
-        .route("/api/versions/checkpoint", post(api_checkpoint))
-        .route("/api/versions/push", post(api_push_to_remote))
-        .route("/api/versions/remote", post(api_set_remote))
-        .route("/admin.html", get(admin_page))
-        .route("/api/admin/remote", get(api_get_remote).post(api_set_remote_admin))
-        .route("/api/admin/schedule", get(api_get_schedule).post(api_set_schedule))
-        .route("/api/admin/test-push", post(api_test_push))
-        .route("/raw/:name", get(get_raw_file))
-        .route("/ws/:name", get(ws_handler))
-        .fallback_service(
-            get_service(ServeDir::new("static")).handle_error(|_err| async move {
-                (StatusCode::INTERNAL_SERVER_ERROR, "static file error")
-            }),
-        )
-        .layer(DefaultBodyLimit::max(100 * 1024 * 1024)) // 100MB limit for file uploads
-        .layer(TraceLayer::new_for_http())
-        .layer(
-            CorsLayer::very_permissive(), // simplify testing; tighten for production
-        )
-        .with_state(state.clone());
+    let app =
+        Router::new()
+            .route("/", get(root_page))
+            .route("/healthz", get(health))
+            .route("/login", post(login))
+            .route("/logout", post(logout))
+            .route("/auth/token", get(token_login))
+            .route("/me", get(me).put(put_me))
+            .route("/files", get(list_files))
+            .route(
+                "/files/:name",
+                get(get_file).put(put_file).delete(delete_file),
+            )
+            .route("/files/:name/rename", post(rename_file))
+            // New query-based API for folders and downloads
+            .route("/api/list", get(api_list))
+            .route(
+                "/api/file",
+                get(api_get_file).put(api_put_file).delete(api_delete_file),
+            )
+            .route("/api/rename", post(api_rename))
+            .route("/api/mkdir", post(api_mkdir))
+            .route("/api/download", get(api_download))
+            .route("/api/upload", post(api_upload))
+            .route("/api/ai_modify", post(api_ai_modify))
+            .route(
+                "/api/versions",
+                get(api_list_versions).post(api_restore_version),
+            )
+            .route("/api/versions/checkpoint", post(api_checkpoint))
+            .route("/api/versions/push", post(api_push_to_remote))
+            .route("/api/versions/remote", post(api_set_remote))
+            .route("/admin.html", get(admin_page))
+            .route(
+                "/api/admin/remote",
+                get(api_get_remote).post(api_set_remote_admin),
+            )
+            .route(
+                "/api/admin/schedule",
+                get(api_get_schedule).post(api_set_schedule),
+            )
+            .route("/api/admin/test-push", post(api_test_push))
+            .route("/raw/:name", get(get_raw_file))
+            .route("/ws/:name", get(ws_handler))
+            .fallback_service(get_service(ServeDir::new("static")).handle_error(
+                |_err| async move { (StatusCode::INTERNAL_SERVER_ERROR, "static file error") },
+            ))
+            .layer(DefaultBodyLimit::max(100 * 1024 * 1024)) // 100MB limit for file uploads
+            .layer(TraceLayer::new_for_http())
+            .layer(
+                CorsLayer::very_permissive(), // simplify testing; tighten for production
+            )
+            .with_state(state.clone());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     info!("listening on http://{addr}");
     info!("require_token: {}", state.require_token);
-    info!("token login: http://localhost:{}/auth/token?token={}", args.port, state.auth_token);
-    info!("admin page: http://localhost:{}/admin.html?token={}", args.port, state.admin_token);
-    info!("Set DRAWIO_TOKEN/--token to control the token. Current token: {}", state.auth_token);
-    info!("Set DRAWIO_ADMIN_TOKEN/--admin-token to control the admin token. Current admin token: {}", state.admin_token);
+    info!(
+        "token login: http://localhost:{}/auth/token?token={}",
+        args.port, state.auth_token
+    );
+    info!(
+        "admin page: http://localhost:{}/admin.html?token={}",
+        args.port, state.admin_token
+    );
+    info!(
+        "Set DRAWIO_TOKEN/--token to control the token. Current token: {}",
+        state.auth_token
+    );
+    info!(
+        "Set DRAWIO_ADMIN_TOKEN/--admin-token to control the admin token. Current admin token: {}",
+        state.admin_token
+    );
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
 
 fn init_tracing() {
-    let env_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info,tower_http=info,axum=info".to_string());
+    let env_filter =
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "info,tower_http=info,axum=info".to_string());
     let _ = tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
         .with_env_filter(env_filter)
@@ -346,7 +425,10 @@ fn get_authorized_user_from_header_or_query(
         return Some(u);
     }
     // Header: Authorization: token <TOKEN>
-    if let Some(auth) = headers.get(axum::http::header::AUTHORIZATION).and_then(|h| h.to_str().ok()) {
+    if let Some(auth) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+    {
         let prefix = "token ";
         if let Some(rest) = auth.strip_prefix(prefix) {
             if rest.trim() == state.auth_token {
@@ -369,7 +451,10 @@ fn check_admin_token(
     query: &std::collections::HashMap<String, String>,
 ) -> bool {
     // Header: Authorization: token <ADMIN_TOKEN>
-    if let Some(auth) = headers.get(axum::http::header::AUTHORIZATION).and_then(|h| h.to_str().ok()) {
+    if let Some(auth) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+    {
         let prefix = "token ";
         if let Some(rest) = auth.strip_prefix(prefix) {
             if rest.trim() == state.admin_token {
@@ -417,7 +502,11 @@ async fn login(
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
     // Password login removed. Always disabled.
-    (StatusCode::FORBIDDEN, "password login disabled; use token and PUT /me to set name").into_response()
+    (
+        StatusCode::FORBIDDEN,
+        "password login disabled; use token and PUT /me to set name",
+    )
+        .into_response()
 }
 
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
@@ -465,11 +554,23 @@ async fn put_me(
     if let Some(_existing) = get_session_user(&state, &jar) {
         // Update existing session by re-issuing cookie with new name
         let jar = set_session_user(&state, jar, name);
-        (jar, Json(LoginResponse { username: name.to_string() })).into_response()
+        (
+            jar,
+            Json(LoginResponse {
+                username: name.to_string(),
+            }),
+        )
+            .into_response()
     } else {
         // No session cookie present (e.g., used Authorization header). Create one.
         let jar = set_session_user(&state, jar, name);
-        (jar, Json(LoginResponse { username: name.to_string() })).into_response()
+        (
+            jar,
+            Json(LoginResponse {
+                username: name.to_string(),
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -498,7 +599,7 @@ fn sanitize_name(name: &str) -> Option<String> {
     // Only allow a conservative set of characters
     let valid = name
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' ));
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
     if !valid {
         return None;
     }
@@ -516,9 +617,9 @@ fn sanitize_rel_path(path: &str) -> Option<String> {
         if part.is_empty() || part == "." || part == ".." {
             return None;
         }
-        let valid = part
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ' | '(' | ')' | '+' | ',' ));
+        let valid = part.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ' | '(' | ')' | '+' | ',')
+        });
         if !valid {
             return None;
         }
@@ -650,7 +751,8 @@ async fn put_file(
     AxumPath(name): AxumPath<String>,
     Json(req): Json<FileWriteRequest>,
 ) -> impl IntoResponse {
-    let Some(_username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+    let Some(_username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar)
+    else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
 
@@ -671,7 +773,7 @@ async fn put_file(
                 error!("write file error: {err:?}");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
-            
+
             // Create Git commit only if commit=true query parameter is present
             if q.get("commit").map(|s| s == "true").unwrap_or(false) {
                 let git_mgr = state.git_manager.clone();
@@ -683,21 +785,40 @@ async fn put_file(
                 let message = q.get("message").map(|s| s.clone());
                 let push_schedule = state.push_schedule.clone();
                 tokio::task::spawn(async move {
-                    if let Err(e) = git_mgr.create_version(&file_key_clone, &content_clone, &username, version, message.as_deref(), true).await {
+                    if let Err(e) = git_mgr
+                        .create_version(
+                            &file_key_clone,
+                            &content_clone,
+                            &username,
+                            version,
+                            message.as_deref(),
+                            true,
+                        )
+                        .await
+                    {
                         error!("Failed to create Git version for {}: {e:?}", file_key_clone);
                     } else {
                         // Push after commit if push_on_commit is enabled
                         let schedule = push_schedule.read().await;
                         if schedule.push_on_commit {
-                            info!("Auto-pushing commit for {} to {}:{}", file_key_clone, schedule.remote_name, schedule.branch);
-                            if let Err(e) = git_mgr.push_to_remote(&schedule.remote_name, &schedule.branch).await {
-                                error!("Failed to auto-push after commit for {}: {e:?}", file_key_clone);
+                            info!(
+                                "Auto-pushing commit for {} to {}:{}",
+                                file_key_clone, schedule.remote_name, schedule.branch
+                            );
+                            if let Err(e) = git_mgr
+                                .push_to_remote(&schedule.remote_name, &schedule.branch)
+                                .await
+                            {
+                                error!(
+                                    "Failed to auto-push after commit for {}: {e:?}",
+                                    file_key_clone
+                                );
                             }
                         }
                     }
                 });
             }
-            
+
             StatusCode::NO_CONTENT.into_response()
         }
         Err(err) => {
@@ -714,7 +835,8 @@ async fn delete_file(
     Query(q): Query<std::collections::HashMap<String, String>>,
     AxumPath(name): AxumPath<String>,
 ) -> impl IntoResponse {
-    let Some(_username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+    let Some(_username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar)
+    else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let decoded = percent_decode_str(&name).decode_utf8_lossy().to_string();
@@ -738,7 +860,8 @@ async fn rename_file(
     AxumPath(name): AxumPath<String>,
     Json(req): Json<RenameRequest>,
 ) -> impl IntoResponse {
-    let Some(_username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+    let Some(_username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar)
+    else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let decoded_old = percent_decode_str(&name).decode_utf8_lossy().to_string();
@@ -786,8 +909,14 @@ async fn get_raw_file(
             let content = room.content.read().await.clone();
             let mut resp = Response::new(axum::body::Body::from(content));
             let headers = resp.headers_mut();
-            headers.insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static("application/xml; charset=utf-8"));
-            headers.insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/xml; charset=utf-8"),
+            );
+            headers.insert(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-store"),
+            );
             resp
         }
         Err(err) => {
@@ -805,12 +934,17 @@ async fn ws_handler(
     headers: HeaderMap,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let Some(username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+    let Some(username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar)
+    else {
         return (StatusCode::UNAUTHORIZED, "login required").into_response();
     };
     // Prefer path from query (?path=...) to support folders; fallback to :name
     let file_key = if let Some(p) = q.get("path") {
-        if let Some(safe) = sanitize_rel_path(p) { safe } else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() }
+        if let Some(safe) = sanitize_rel_path(p) {
+            safe
+        } else {
+            return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+        }
     } else {
         let decoded = percent_decode_str(&name).decode_utf8_lossy().to_string();
         let Some(file_key) = to_file_key(&decoded) else {
@@ -886,9 +1020,15 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
     {
         let content = room.content.read().await.clone();
         let version = room.version.load(std::sync::atomic::Ordering::SeqCst);
-        let init_msg = ServerWsMessage::Init { version, content, your_id: conn_id.clone() };
+        let init_msg = ServerWsMessage::Init {
+            version,
+            content,
+            your_id: conn_id.clone(),
+        };
         let _ = socket
-            .send(WsRawMessage::Text(serde_json::to_string(&init_msg).unwrap()))
+            .send(WsRawMessage::Text(
+                serde_json::to_string(&init_msg).unwrap(),
+            ))
             .await;
     }
 
@@ -908,7 +1048,8 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
             .collect::<Vec<_>>();
         let _ = socket
             .send(WsRawMessage::Text(
-                serde_json::to_string(&ServerWsMessage::PresenceSnapshot { users: snapshot }).unwrap(),
+                serde_json::to_string(&ServerWsMessage::PresenceSnapshot { users: snapshot })
+                    .unwrap(),
             ))
             .await;
         let _ = room.tx.send(ServerWsMessage::PresenceJoin {
@@ -929,30 +1070,53 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
                 match incoming {
                     WsRawMessage::Text(txt) => {
                         match serde_json::from_str::<ClientWsMessage>(&txt) {
-                            Ok(ClientWsMessage::Replace { version: _version, content }) => {
-                                // naive versioning: accept any update, bump version, save to disk, broadcast
-                                {
-                                    let mut guard = room.content.write().await;
-                                    *guard = content.clone();
-                                    room.version.fetch_add(1, Ordering::SeqCst);
+                            Ok(ClientWsMessage::Replace { version: client_version, content }) => {
+                                // Optimistic concurrency control: only accept updates based on current version
+                                let current_version = room.version.load(Ordering::SeqCst);
+
+                                if client_version != current_version {
+                                    // Version mismatch: client is trying to update from a stale version
+                                    // Send conflict response with current server state so client can reload/merge
+                                    let server_content = room.content.read().await.clone();
+                                    info!(
+                                        "Version conflict for {}: client has v{}, server has v{} (user: {})",
+                                        file_key, client_version, current_version, username
+                                    );
+                                    let _ = sender
+                                        .send(WsRawMessage::Text(
+                                            serde_json::to_string(&ServerWsMessage::Conflict {
+                                                server_version: current_version,
+                                                client_version,
+                                                content: server_content,
+                                            })
+                                            .unwrap(),
+                                        ))
+                                        .await;
+                                } else {
+                                    // Version matches: accept the update
+                                    {
+                                        let mut guard = room.content.write().await;
+                                        *guard = content.clone();
+                                        room.version.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                    let new_version = room.version.load(Ordering::SeqCst);
+                                    // persist
+                                    let path = to_data_path(&state.data_dir, &file_key);
+                                    mark_file_writing(&state, &file_key);
+                                    if let Err(err) = fs::write(&path, content.as_bytes()).await {
+                                        error!("ws write file error: {err:?}");
+                                    }
+
+                                    // Note: Git commits are not created automatically from WebSocket updates.
+                                    // Use the /api/versions/checkpoint endpoint or save with ?commit=true to create commits.
+
+                                    let _ = room.tx.send(ServerWsMessage::Update {
+                                        version: new_version,
+                                        content,
+                                        username: username.clone(),
+                                        sender_id: conn_id.clone(),
+                                    });
                                 }
-                                let new_version = room.version.load(Ordering::SeqCst);
-                                // persist
-                                let path = to_data_path(&state.data_dir, &file_key);
-                                mark_file_writing(&state, &file_key);
-                                if let Err(err) = fs::write(&path, content.as_bytes()).await {
-                                    error!("ws write file error: {err:?}");
-                                }
-                                
-                                // Note: Git commits are not created automatically from WebSocket updates.
-                                // Use the /api/versions/checkpoint endpoint or save with ?commit=true to create commits.
-                                
-                                let _ = room.tx.send(ServerWsMessage::Update {
-                                    version: new_version,
-                                    content,
-                                    username: username.clone(),
-                                    sender_id: conn_id.clone(),
-                                });
                             }
                             Ok(ClientWsMessage::Cursor { x, y, basis }) => {
                                 //let x = x.clamp(0.0, 1.0);
@@ -1043,7 +1207,13 @@ async fn api_list(
         }
     }
     let rel = q.get("path").cloned().unwrap_or_else(|| "".to_string());
-    let Some(safe) = sanitize_rel_path(&rel).or_else(|| if rel.is_empty() { Some("".to_string()) } else { None }) else {
+    let Some(safe) = sanitize_rel_path(&rel).or_else(|| {
+        if rel.is_empty() {
+            Some("".to_string())
+        } else {
+            None
+        }
+    }) else {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     };
     let dir_path = to_data_rel_path(&state.data_dir, &safe);
@@ -1075,7 +1245,11 @@ async fn api_list(
         if meta.is_dir() {
             out.push(FsEntry {
                 name: name.clone(),
-                path: if safe.is_empty() { name.clone() } else { format!("{}/{}", safe, name) },
+                path: if safe.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}/{}", safe, name)
+                },
                 is_dir: true,
                 size: None,
                 modified_ms,
@@ -1084,7 +1258,11 @@ async fn api_list(
             if name.ends_with(".drawio") {
                 out.push(FsEntry {
                     name: name.clone(),
-                    path: if safe.is_empty() { name.clone() } else { format!("{}/{}", safe, name) },
+                    path: if safe.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{}/{}", safe, name)
+                    },
                     is_dir: false,
                     size,
                     modified_ms,
@@ -1099,7 +1277,11 @@ async fn api_list(
                         if target_meta.is_dir() {
                             out.push(FsEntry {
                                 name: name.clone(),
-                                path: if safe.is_empty() { name.clone() } else { format!("{}/{}", safe, name) },
+                                path: if safe.is_empty() {
+                                    name.clone()
+                                } else {
+                                    format!("{}/{}", safe, name)
+                                },
                                 is_dir: true,
                                 size: None,
                                 modified_ms,
@@ -1107,7 +1289,11 @@ async fn api_list(
                         } else if target_meta.is_file() && name.ends_with(".drawio") {
                             out.push(FsEntry {
                                 name: name.clone(),
-                                path: if safe.is_empty() { name.clone() } else { format!("{}/{}", safe, name) },
+                                path: if safe.is_empty() {
+                                    name.clone()
+                                } else {
+                                    format!("{}/{}", safe, name)
+                                },
                                 is_dir: false,
                                 size,
                                 modified_ms,
@@ -1118,7 +1304,12 @@ async fn api_list(
             }
         }
     }
-    out.sort_by(|a, b| a.is_dir.cmp(&b.is_dir).reverse().then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    out.sort_by(|a, b| {
+        a.is_dir
+            .cmp(&b.is_dir)
+            .reverse()
+            .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     Json(out).into_response()
 }
 
@@ -1131,13 +1322,22 @@ async fn api_get_file(
     let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(path) = q.get("path") else { return (StatusCode::BAD_REQUEST, "missing path").into_response() };
-    let Some(safe) = sanitize_rel_path(path) else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() };
+    let Some(path) = q.get("path") else {
+        return (StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    let Some(safe) = sanitize_rel_path(path) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
     match ensure_room_loaded(&state, &safe).await {
         Ok(room) => {
             let content = room.content.read().await.clone();
             let version = room.version.load(Ordering::SeqCst);
-            Json(FileContentResponse { name: safe, version, content }).into_response()
+            Json(FileContentResponse {
+                name: safe,
+                version,
+                content,
+            })
+            .into_response()
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
@@ -1153,13 +1353,43 @@ async fn api_put_file(
     let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(path) = q.get("path") else { return (StatusCode::BAD_REQUEST, "missing path").into_response() };
-    let Some(safe) = sanitize_rel_path(path) else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() };
+    let Some(path) = q.get("path") else {
+        return (StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    let Some(safe) = sanitize_rel_path(path) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
     let pb = to_data_rel_path(&state.data_dir, &safe);
     if let Some(parent) = pb.parent() {
         let _ = fs::create_dir_all(parent).await;
     }
+    let username = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar)
+        .unwrap_or_else(|| "unknown".to_string());
+
     let room = ensure_room_loaded(&state, &safe).await.map_err(|_| ()).ok();
+
+    // Optimistic concurrency control: if client provides a version, check it matches
+    if let Some(client_version) = req.version {
+        if let Some(ref r) = room {
+            let server_version = r.version.load(Ordering::SeqCst);
+            if client_version != server_version {
+                // Version mismatch - reject the update
+                let server_content = r.content.read().await.clone();
+                info!(
+                    "HTTP PUT version conflict for {}: client has v{}, server has v{} (user: {})",
+                    safe, client_version, server_version, username
+                );
+                return Json(serde_json::json!({
+                    "error": "version_conflict",
+                    "server_version": server_version,
+                    "client_version": client_version,
+                    "content": server_content
+                }))
+                .into_response();
+            }
+        }
+    }
+
     let version = if let Some(ref r) = room {
         {
             let mut guard = r.content.write().await;
@@ -1174,32 +1404,57 @@ async fn api_put_file(
     if let Err(_) = fs::write(&pb, req.content.as_bytes()).await {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    
+
+    // Broadcast update to all WebSocket clients so they sync their version
+    if let Some(ref r) = room {
+        let _ = r.tx.send(ServerWsMessage::Update {
+            version,
+            content: req.content.clone(),
+            username: username.clone(),
+            sender_id: "http-api".to_string(), // Special ID to identify HTTP API saves
+        });
+    }
+
     // Create Git commit only if commit=true query parameter is present
     if q.get("commit").map(|s| s == "true").unwrap_or(false) {
         let git_mgr = state.git_manager.clone();
         let safe_clone = safe.clone();
         let content_clone = req.content.clone();
-        let username = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar)
-            .unwrap_or_else(|| "unknown".to_string());
+        let username_clone = username.clone();
         let message = q.get("message").map(|s| s.clone());
         let push_schedule = state.push_schedule.clone();
         tokio::task::spawn(async move {
-            if let Err(e) = git_mgr.create_version(&safe_clone, &content_clone, &username, version, message.as_deref(), true).await {
+            if let Err(e) = git_mgr
+                .create_version(
+                    &safe_clone,
+                    &content_clone,
+                    &username_clone,
+                    version,
+                    message.as_deref(),
+                    true,
+                )
+                .await
+            {
                 error!("Failed to create Git version for {}: {e:?}", safe_clone);
             } else {
                 // Push after commit if push_on_commit is enabled
                 let schedule = push_schedule.read().await;
                 if schedule.push_on_commit {
-                    info!("Auto-pushing commit for {} to {}:{}", safe_clone, schedule.remote_name, schedule.branch);
-                    if let Err(e) = git_mgr.push_to_remote(&schedule.remote_name, &schedule.branch).await {
+                    info!(
+                        "Auto-pushing commit for {} to {}:{}",
+                        safe_clone, schedule.remote_name, schedule.branch
+                    );
+                    if let Err(e) = git_mgr
+                        .push_to_remote(&schedule.remote_name, &schedule.branch)
+                        .await
+                    {
                         error!("Failed to auto-push after commit for {}: {e:?}", safe_clone);
                     }
                 }
             }
         });
     }
-    
+
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -1212,8 +1467,12 @@ async fn api_delete_file(
     let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(path) = q.get("path") else { return (StatusCode::BAD_REQUEST, "missing path").into_response() };
-    let Some(safe) = sanitize_rel_path(path) else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() };
+    let Some(path) = q.get("path") else {
+        return (StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    let Some(safe) = sanitize_rel_path(path) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
     let pb = to_data_rel_path(&state.data_dir, &safe);
     if let Err(_) = fs::remove_file(&pb).await {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -1232,20 +1491,33 @@ async fn api_rename(
     let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(from) = sanitize_rel_path(&body.from) else { return (StatusCode::BAD_REQUEST, "invalid from").into_response() };
-    let Some(to) = sanitize_rel_path(&body.to) else { return (StatusCode::BAD_REQUEST, "invalid to").into_response() };
+    let Some(from) = sanitize_rel_path(&body.from) else {
+        return (StatusCode::BAD_REQUEST, "invalid from").into_response();
+    };
+    let Some(to) = sanitize_rel_path(&body.to) else {
+        return (StatusCode::BAD_REQUEST, "invalid to").into_response();
+    };
     let from_pb = to_data_rel_path(&state.data_dir, &from);
     let to_pb = to_data_rel_path(&state.data_dir, &to);
     // Only enforce .drawio extension when renaming files; allow directories without extension
     match tokio::fs::metadata(&from_pb).await {
         Ok(meta) => {
             if meta.is_file() && !to.ends_with(".drawio") {
-                return (StatusCode::BAD_REQUEST, "new file name must end with .drawio").into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "new file name must end with .drawio",
+                )
+                    .into_response();
             }
         }
         Err(_) => {
             // If we can't read metadata, fall back to requiring extension only when destination looks like a file
-            if to.split('/').last().map(|s| !s.is_empty() && !s.ends_with(".drawio")).unwrap_or(false) {
+            if to
+                .split('/')
+                .last()
+                .map(|s| !s.is_empty() && !s.ends_with(".drawio"))
+                .unwrap_or(false)
+            {
                 // We can't tell; proceed anyway to let fs::rename surface an error if needed
             }
         }
@@ -1272,7 +1544,9 @@ async fn api_mkdir(
     let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(safe) = sanitize_rel_path(&body.path) else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() };
+    let Some(safe) = sanitize_rel_path(&body.path) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
     let pb = to_data_rel_path(&state.data_dir, &safe);
     if let Err(_) = fs::create_dir_all(&pb).await {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -1289,16 +1563,26 @@ async fn api_download(
     let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(path) = q.get("path") else { return (StatusCode::BAD_REQUEST, "missing path").into_response() };
-    let Some(safe) = sanitize_rel_path(path) else { return (StatusCode::BAD_REQUEST, "invalid path").into_response() };
+    let Some(path) = q.get("path") else {
+        return (StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    let Some(safe) = sanitize_rel_path(path) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
     let pb = to_data_rel_path(&state.data_dir, &safe);
-    let Ok(bytes) = fs::read(&pb).await else { return StatusCode::NOT_FOUND.into_response() };
+    let Ok(bytes) = fs::read(&pb).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let mut resp = Response::new(axum::body::Body::from(bytes));
-    resp.headers_mut().insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static("application/xml"));
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/xml"),
+    );
     let filename = safe.split('/').last().unwrap_or("diagram.drawio");
     let cd = format!("attachment; filename=\"{}\"", filename);
     if let Ok(val) = axum::http::HeaderValue::from_str(&cd) {
-        resp.headers_mut().insert(axum::http::header::CONTENT_DISPOSITION, val);
+        resp.headers_mut()
+            .insert(axum::http::header::CONTENT_DISPOSITION, val);
     }
     resp
 }
@@ -1324,13 +1608,13 @@ async fn api_upload(
         match multipart.next_field().await {
             Ok(Some(field)) => {
                 let field_name = field.name().unwrap_or("").to_string();
-                
+
                 if field_name == "file" {
                     // Get filename from Content-Disposition header
                     if let Some(name) = field.file_name() {
                         filename = Some(name.to_string());
                     }
-                    
+
                     // Read file data
                     match field.bytes().await {
                         Ok(bytes) => {
@@ -1338,7 +1622,8 @@ async fn api_upload(
                         }
                         Err(e) => {
                             error!("upload error reading file: {e:?}");
-                            return (StatusCode::BAD_REQUEST, format!("error reading file: {e}")).into_response();
+                            return (StatusCode::BAD_REQUEST, format!("error reading file: {e}"))
+                                .into_response();
                         }
                     }
                 } else if field_name == "path" {
@@ -1360,7 +1645,8 @@ async fn api_upload(
             }
             Err(e) => {
                 error!("upload error parsing multipart field: {e:?}");
-                return (StatusCode::BAD_REQUEST, format!("error parsing form: {e}")).into_response();
+                return (StatusCode::BAD_REQUEST, format!("error parsing form: {e}"))
+                    .into_response();
             }
         }
     }
@@ -1405,7 +1691,10 @@ async fn api_upload(
         let parts: Vec<&str> = target_path.split('/').collect();
         if let Some(last) = parts.last() {
             if !last.ends_with(".drawio") && !last.is_empty() {
-                let mut new_parts: Vec<String> = parts[..parts.len() - 1].iter().map(|s| s.to_string()).collect();
+                let mut new_parts: Vec<String> = parts[..parts.len() - 1]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
                 let new_last = format!("{}.drawio", last);
                 new_parts.push(new_last);
                 new_parts.join("/")
@@ -1467,7 +1756,6 @@ async fn api_upload(
     Json(serde_json::json!({ "path": safe_path })).into_response()
 }
 
-
 // ----- AI Modify -----
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1497,7 +1785,7 @@ struct AiModifyResponse {
 fn extract_xml(input: &str) -> Option<String> {
     // Strip code fences if present (handles both ``` and ''')
     let mut s = input.trim();
-    
+
     // Handle triple backticks (```) or triple single quotes (''')
     if s.starts_with("```") {
         // Find the first newline after the opening fence (may have language identifier like "xml")
@@ -1520,7 +1808,7 @@ fn extract_xml(input: &str) -> Option<String> {
         }
         s = s.trim();
     }
-    
+
     // Find xml span - look for <?xml or <mxfile
     let start_pos = s.find("<?xml").or_else(|| s.find("<mxfile"))?;
     let end_tag = "</mxfile>";
@@ -1528,12 +1816,12 @@ fn extract_xml(input: &str) -> Option<String> {
     let end_idx = start_pos + end_pos + end_tag.len();
     let out = &s[start_pos..end_idx];
     let xml = out.trim().to_string();
-    
+
     // Basic XML validation: check for well-formed structure
     if !validate_xml_basic(&xml) {
         return None;
     }
-    
+
     Some(xml)
 }
 
@@ -1559,7 +1847,12 @@ fn validate_xml_basic(xml: &str) -> bool {
     true
 }
 
-async fn call_openrouter(model: &str, sys: &str, user: &str, temperature: Option<f32>) -> anyhow::Result<String> {
+async fn call_openrouter(
+    model: &str,
+    sys: &str,
+    user: &str,
+    temperature: Option<f32>,
+) -> anyhow::Result<String> {
     let key = std::env::var("OPENROUTER_API_KEY")
         .map_err(|_| anyhow::anyhow!("OPENROUTER_API_KEY not set"))?;
     let client = Client::new();
@@ -1594,8 +1887,14 @@ async fn call_openrouter(model: &str, sys: &str, user: &str, temperature: Option
     Ok(content.to_string())
 }
 
-async fn call_ollama(model: &str, sys: &str, user: &str, temperature: Option<f32>) -> anyhow::Result<String> {
-    let url = std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434/api/chat".to_string());
+async fn call_ollama(
+    model: &str,
+    sys: &str,
+    user: &str,
+    temperature: Option<f32>,
+) -> anyhow::Result<String> {
+    let url = std::env::var("OLLAMA_URL")
+        .unwrap_or_else(|_| "http://localhost:11434/api/chat".to_string());
     let client = Client::new();
     // Try chat endpoint
     let mut body = serde_json::json!({
@@ -1608,7 +1907,10 @@ async fn call_ollama(model: &str, sys: &str, user: &str, temperature: Option<f32
     });
     if let Some(t) = temperature {
         if let Some(map) = body.as_object_mut() {
-            map.insert("options".to_string(), serde_json::json!({ "temperature": t }));
+            map.insert(
+                "options".to_string(),
+                serde_json::json!({ "temperature": t }),
+            );
         }
     }
     let resp = client.post(&url).json(&body).send().await?;
@@ -1725,7 +2027,8 @@ async fn stream_ollama(
     tx: broadcast::Sender<ServerWsMessage>,
     job_id: &str,
 ) -> anyhow::Result<String> {
-    let url = std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434/api/chat".to_string());
+    let url = std::env::var("OLLAMA_URL")
+        .unwrap_or_else(|_| "http://localhost:11434/api/chat".to_string());
     let client = Client::new();
     let mut body = serde_json::json!({
         "model": model,
@@ -1737,7 +2040,10 @@ async fn stream_ollama(
     });
     if let Some(t) = temperature {
         if let Some(map) = body.as_object_mut() {
-            map.insert("options".to_string(), serde_json::json!({ "temperature": t }));
+            map.insert(
+                "options".to_string(),
+                serde_json::json!({ "temperature": t }),
+            );
         }
     }
     let resp = client.post(&url).json(&body).send().await?;
@@ -1833,8 +2139,28 @@ async fn api_ai_modify(
         detail: format!("provider={:?}, model={}", req.provider, req.model),
     });
     let ai_result = match req.provider {
-        AiProvider::Openrouter => stream_openrouter(&req.model, &sys, &user, req.temperature, room.tx.clone(), &job_id).await,
-        AiProvider::Ollama => stream_ollama(&req.model, &sys, &user, req.temperature, room.tx.clone(), &job_id).await,
+        AiProvider::Openrouter => {
+            stream_openrouter(
+                &req.model,
+                &sys,
+                &user,
+                req.temperature,
+                room.tx.clone(),
+                &job_id,
+            )
+            .await
+        }
+        AiProvider::Ollama => {
+            stream_ollama(
+                &req.model,
+                &sys,
+                &user,
+                req.temperature,
+                room.tx.clone(),
+                &job_id,
+            )
+            .await
+        }
     };
     let raw = match ai_result {
         Ok(s) => {
@@ -1870,7 +2196,11 @@ async fn api_ai_modify(
             raw.clone()
         };
         let error_detail = format!("AI did not return valid .drawio XML. Received: {}", preview);
-        error!("extract_xml failed. Raw length: {}, preview: {}", raw.len(), preview);
+        error!(
+            "extract_xml failed. Raw length: {}, preview: {}",
+            raw.len(),
+            preview
+        );
         let _ = room.tx.send(ServerWsMessage::AiStatus {
             username: "ai".to_string(),
             job_id: job_id.clone(),
@@ -1879,14 +2209,23 @@ async fn api_ai_modify(
         });
         return (StatusCode::BAD_GATEWAY, error_detail).into_response();
     };
-    info!("extract_xml succeeded. Extracted XML length: {}, starts with: {}", new_xml.len(), &new_xml[..new_xml.len().min(100)]);
+    info!(
+        "extract_xml succeeded. Extracted XML length: {}, starts with: {}",
+        new_xml.len(),
+        &new_xml[..new_xml.len().min(100)]
+    );
     // Update room, persist, broadcast
     {
         let mut guard = room.content.write().await;
         let old_len = guard.len();
         *guard = new_xml.clone();
         room.version.fetch_add(1, Ordering::SeqCst);
-        info!("Room updated: old length {}, new length {}, version {}", old_len, new_xml.len(), room.version.load(Ordering::SeqCst));
+        info!(
+            "Room updated: old length {}, new length {}, version {}",
+            old_len,
+            new_xml.len(),
+            room.version.load(Ordering::SeqCst)
+        );
     }
     let _ = room.tx.send(ServerWsMessage::AiStatus {
         username: "ai".to_string(),
@@ -1910,7 +2249,11 @@ async fn api_ai_modify(
         });
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    info!("Broadcasting AI update: version {}, content length {}", version, new_xml.len());
+    info!(
+        "Broadcasting AI update: version {}, content length {}",
+        version,
+        new_xml.len()
+    );
     let _ = room.tx.send(ServerWsMessage::Update {
         version,
         content: new_xml.clone(),
@@ -1923,7 +2266,11 @@ async fn api_ai_modify(
         phase: "done".to_string(),
         detail: "AI modification applied".to_string(),
     });
-    Json(AiModifyResponse { version, content: new_xml }).into_response()
+    Json(AiModifyResponse {
+        version,
+        content: new_xml,
+    })
+    .into_response()
 }
 
 // ----- File Watcher Helpers -----
@@ -1931,13 +2278,17 @@ async fn api_ai_modify(
 fn mark_file_writing(state: &AppState, file_key: &str) {
     #[cfg(feature = "file-watcher")]
     {
-        state.writing_files.insert(file_key.to_string(), Instant::now());
+        state
+            .writing_files
+            .insert(file_key.to_string(), Instant::now());
         // Clean up old entries (older than 5 seconds) in background
         let state_clone = state.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(5)).await;
             let cutoff = Instant::now() - Duration::from_secs(5);
-            state_clone.writing_files.retain(|_, &mut time| time > cutoff);
+            state_clone
+                .writing_files
+                .retain(|_, &mut time| time > cutoff);
         });
     }
     #[cfg(not(feature = "file-watcher"))]
@@ -1952,7 +2303,7 @@ fn mark_file_writing(state: &AppState, file_key: &str) {
 async fn watch_files(state: AppState, data_dir: PathBuf) -> anyhow::Result<()> {
     use std::sync::mpsc;
     use tokio::sync::mpsc as tokio_mpsc;
-    
+
     // Convert to absolute path for proper path comparison
     let data_dir_abs = data_dir.canonicalize().unwrap_or_else(|_| {
         // If canonicalize fails (e.g., path doesn't exist yet), use current_dir + relative path
@@ -1962,25 +2313,30 @@ async fn watch_files(state: AppState, data_dir: PathBuf) -> anyhow::Result<()> {
             .canonicalize()
             .unwrap_or(data_dir.clone())
     });
-    
+
     let (notify_tx, notify_rx) = mpsc::channel();
     let mut watcher: RecommendedWatcher = Watcher::new(notify_tx, Config::default())?;
     watcher.watch(&data_dir_abs, RecursiveMode::Recursive)?;
-    info!("File watcher started for {} (recursive mode - watching all subdirectories)", data_dir_abs.display());
-    
+    info!(
+        "File watcher started for {} (recursive mode - watching all subdirectories)",
+        data_dir_abs.display()
+    );
+
     // Verify the watcher is set up correctly by checking if we can watch
     // Note: On some platforms, recursive watching might have limitations
     // If files in new subdirectories aren't detected, we might need to re-watch
-    
+
     // Bridge from blocking channel to async channel
     let (async_tx, mut async_rx) = tokio_mpsc::unbounded_channel();
-    
+
     // Spawn blocking task to bridge from blocking notify channel to async channel
     tokio::task::spawn_blocking(move || {
         loop {
             match notify_rx.recv() {
                 Ok(event_result) => {
-                    info!("File watcher bridge: received event from notify, sending to async channel");
+                    info!(
+                        "File watcher bridge: received event from notify, sending to async channel"
+                    );
                     // Send to async channel - this is safe because unbounded_channel::send is non-blocking
                     if async_tx.send(event_result).is_err() {
                         error!("File watcher bridge: failed to send to async channel (receiver dropped)");
@@ -1996,107 +2352,147 @@ async fn watch_files(state: AppState, data_dir: PathBuf) -> anyhow::Result<()> {
             }
         }
     });
-    
+
     // Debounce map: file_key -> (last_event_time, task_handle)
     let mut debounce_map: HashMap<String, (Instant, tokio::task::JoinHandle<()>)> = HashMap::new();
     let debounce_duration = Duration::from_millis(500); // 500ms debounce
-    
+
     info!("File watcher: entering main event loop, waiting for events...");
     loop {
         info!("File watcher: waiting for next event from async channel...");
         match async_rx.recv().await {
             Some(res) => {
                 info!("File watcher: received event from async channel");
-        match res {
-            Ok(Event { kind, paths, .. }) => {
-                info!("File watcher: parsed event - kind={:?}, paths={:?}", kind, paths);
-                match kind {
-                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Any => {
-                        info!("File watcher: event kind matches, processing {} paths", paths.len());
-                        for path in paths {
-                            let path_str = path.to_string_lossy();
-                            info!("File watcher: checking path {}", path_str);
-                            
-                            // Check if it's a .drawio file
-                            if !path_str.ends_with(".drawio") {
-                                info!("File watcher: skipping non-.drawio file: {}", path_str);
-                                continue;
-                            }
-                            info!("File watcher: processing .drawio file: {}", path_str);
-                            
-                            // Check if file exists (might not exist yet for Create events)
-                            if !path.exists() {
-                                info!("File watcher: path {} does not exist yet, skipping", path_str);
-                                continue;
-                            }
-                            
-                            // Check if it's actually a file (not a directory)
-                            if !path.is_file() {
-                                info!("File watcher: path {} is not a file, skipping", path_str);
-                                continue;
-                            }
-                            
-                                                    // Get relative path from data_dir (use absolute path for comparison)
-                            let Ok(rel_path) = path.strip_prefix(&data_dir_abs) else {
-                                info!("File watcher: path {} is not under data_dir {}, skipping", path_str, data_dir_abs.display());
-                                continue;
-                            };
-                            // Normalize path separators (Windows uses \, Unix uses /)
-                            let mut file_key = rel_path.to_string_lossy().replace('\\', "/");
-                            // Remove leading slash if present
-                            file_key = file_key.trim_start_matches('/').to_string();
-                            info!("File watcher: detected change in file_key='{}', data_dir={}, rel_path={:?}", 
+                match res {
+                    Ok(Event { kind, paths, .. }) => {
+                        info!(
+                            "File watcher: parsed event - kind={:?}, paths={:?}",
+                            kind, paths
+                        );
+                        match kind {
+                            EventKind::Modify(_) | EventKind::Create(_) | EventKind::Any => {
+                                info!(
+                                    "File watcher: event kind matches, processing {} paths",
+                                    paths.len()
+                                );
+                                for path in paths {
+                                    let path_str = path.to_string_lossy();
+                                    info!("File watcher: checking path {}", path_str);
+
+                                    // Check if it's a .drawio file
+                                    if !path_str.ends_with(".drawio") {
+                                        info!(
+                                            "File watcher: skipping non-.drawio file: {}",
+                                            path_str
+                                        );
+                                        continue;
+                                    }
+                                    info!("File watcher: processing .drawio file: {}", path_str);
+
+                                    // Check if file exists (might not exist yet for Create events)
+                                    if !path.exists() {
+                                        info!(
+                                            "File watcher: path {} does not exist yet, skipping",
+                                            path_str
+                                        );
+                                        continue;
+                                    }
+
+                                    // Check if it's actually a file (not a directory)
+                                    if !path.is_file() {
+                                        info!(
+                                            "File watcher: path {} is not a file, skipping",
+                                            path_str
+                                        );
+                                        continue;
+                                    }
+
+                                    // Get relative path from data_dir (use absolute path for comparison)
+                                    let Ok(rel_path) = path.strip_prefix(&data_dir_abs) else {
+                                        info!("File watcher: path {} is not under data_dir {}, skipping", path_str, data_dir_abs.display());
+                                        continue;
+                                    };
+                                    // Normalize path separators (Windows uses \, Unix uses /)
+                                    let mut file_key =
+                                        rel_path.to_string_lossy().replace('\\', "/");
+                                    // Remove leading slash if present
+                                    file_key = file_key.trim_start_matches('/').to_string();
+                                    info!("File watcher: detected change in file_key='{}', data_dir={}, rel_path={:?}", 
                                   file_key, data_dir_abs.display(), rel_path);
-                            
-                            // Debug: list all current rooms (only log first few to avoid spam)
-                            let room_keys: Vec<String> = state.rooms.iter().map(|r| r.key().clone()).take(10).collect();
-                            if !room_keys.is_empty() {
-                                info!("File watcher: sample of current rooms (showing first 10): {:?}", room_keys);
-                            } else {
-                                info!("File watcher: no active rooms currently");
-                            }
-                            
-                            // Check if we're currently writing this file (ignore our own writes)
-                            if let Some(write_time) = state.writing_files.get(&file_key) {
-                                let elapsed = write_time.elapsed();
-                                if elapsed < Duration::from_secs(2) {
-                                    // We wrote this file recently, ignore
-                                    info!("File watcher: ignoring change to {} (we wrote it {}ms ago)", file_key, elapsed.as_millis());
-                                    continue;
+
+                                    // Debug: list all current rooms (only log first few to avoid spam)
+                                    let room_keys: Vec<String> = state
+                                        .rooms
+                                        .iter()
+                                        .map(|r| r.key().clone())
+                                        .take(10)
+                                        .collect();
+                                    if !room_keys.is_empty() {
+                                        info!("File watcher: sample of current rooms (showing first 10): {:?}", room_keys);
+                                    } else {
+                                        info!("File watcher: no active rooms currently");
+                                    }
+
+                                    // Check if we're currently writing this file (ignore our own writes)
+                                    if let Some(write_time) = state.writing_files.get(&file_key) {
+                                        let elapsed = write_time.elapsed();
+                                        if elapsed < Duration::from_secs(2) {
+                                            // We wrote this file recently, ignore
+                                            info!("File watcher: ignoring change to {} (we wrote it {}ms ago)", file_key, elapsed.as_millis());
+                                            continue;
+                                        }
+                                    }
+
+                                    // Cancel previous debounce task for this file if it exists
+                                    if let Some((_, handle)) = debounce_map.remove(&file_key) {
+                                        info!(
+                                            "File watcher: canceling previous debounce for {}",
+                                            file_key
+                                        );
+                                        handle.abort();
+                                    }
+
+                                    // Create new debounce task
+                                    let state_clone = state.clone();
+                                    let file_key_clone = file_key.clone();
+                                    let path_clone = path.clone();
+                                    info!(
+                                        "File watcher: scheduling reload of {} after {}ms",
+                                        file_key_clone,
+                                        debounce_duration.as_millis()
+                                    );
+                                    let handle = tokio::spawn(async move {
+                                        tokio::time::sleep(debounce_duration).await;
+                                        info!(
+                                            "File watcher: debounce complete, reloading {}",
+                                            file_key_clone
+                                        );
+                                        if let Err(e) = reload_file_from_disk(
+                                            &state_clone,
+                                            &file_key_clone,
+                                            &path_clone,
+                                        )
+                                        .await
+                                        {
+                                            error!(
+                                                "Failed to reload file {}: {e:?}",
+                                                file_key_clone
+                                            );
+                                        }
+                                    });
+
+                                    debounce_map.insert(file_key.clone(), (Instant::now(), handle));
                                 }
                             }
-                            
-                            // Cancel previous debounce task for this file if it exists
-                            if let Some((_, handle)) = debounce_map.remove(&file_key) {
-                                info!("File watcher: canceling previous debounce for {}", file_key);
-                                handle.abort();
+                            _ => {
+                                info!("File watcher: ignoring event kind {:?}", kind);
                             }
-                            
-                            // Create new debounce task
-                            let state_clone = state.clone();
-                            let file_key_clone = file_key.clone();
-                            let path_clone = path.clone();
-                            info!("File watcher: scheduling reload of {} after {}ms", file_key_clone, debounce_duration.as_millis());
-                            let handle = tokio::spawn(async move {
-                                tokio::time::sleep(debounce_duration).await;
-                                info!("File watcher: debounce complete, reloading {}", file_key_clone);
-                                if let Err(e) = reload_file_from_disk(&state_clone, &file_key_clone, &path_clone).await {
-                                    error!("Failed to reload file {}: {e:?}", file_key_clone);
-                                }
-                            });
-                            
-                            debounce_map.insert(file_key.clone(), (Instant::now(), handle));
                         }
                     }
-                    _ => {
-                        info!("File watcher: ignoring event kind {:?}", kind);
+                    Err(e) => {
+                        error!("File watcher: error parsing event: {e:?}");
                     }
                 }
-            }
-            Err(e) => {
-                error!("File watcher: error parsing event: {e:?}");
-            }
-        }
             }
             None => {
                 error!("File watcher: async channel closed (sender dropped)");
@@ -2109,27 +2505,45 @@ async fn watch_files(state: AppState, data_dir: PathBuf) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "file-watcher")]
-async fn reload_file_from_disk(state: &AppState, file_key: &str, path: &Path) -> anyhow::Result<()> {
-    info!("reload_file_from_disk: reading file_key={}, path={}", file_key, path.display());
-    
+async fn reload_file_from_disk(
+    state: &AppState,
+    file_key: &str,
+    path: &Path,
+) -> anyhow::Result<()> {
+    info!(
+        "reload_file_from_disk: reading file_key={}, path={}",
+        file_key,
+        path.display()
+    );
+
     // Read file from disk
     let new_content = match fs::read_to_string(path).await {
         Ok(c) => {
-            info!("reload_file_from_disk: read {} bytes from {}", c.len(), path.display());
+            info!(
+                "reload_file_from_disk: read {} bytes from {}",
+                c.len(),
+                path.display()
+            );
             c
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // File was deleted, remove room
-            info!("reload_file_from_disk: file {} was deleted, removing room", file_key);
+            info!(
+                "reload_file_from_disk: file {} was deleted, removing room",
+                file_key
+            );
             state.rooms.remove(file_key);
             return Ok(());
         }
         Err(e) => {
-            error!("reload_file_from_disk: read error for {}: {e}", path.display());
+            error!(
+                "reload_file_from_disk: read error for {}: {e}",
+                path.display()
+            );
             return Err(anyhow::anyhow!("read error: {e}"));
         }
     };
-    
+
     // Get or create room - try exact match first
     let room = if let Some(existing) = state.rooms.get(file_key) {
         info!("reload_file_from_disk: room exists for {}", file_key);
@@ -2137,7 +2551,10 @@ async fn reload_file_from_disk(state: &AppState, file_key: &str, path: &Path) ->
     } else {
         // Room doesn't exist yet - try to find by matching file paths
         // Some editors might have opened the file with a different key format
-        info!("reload_file_from_disk: room not found for key '{}', searching by path", file_key);
+        info!(
+            "reload_file_from_disk: room not found for key '{}', searching by path",
+            file_key
+        );
         let mut found_room = None;
         let mut found_key = None;
         for entry in state.rooms.iter() {
@@ -2145,18 +2562,25 @@ async fn reload_file_from_disk(state: &AppState, file_key: &str, path: &Path) ->
             // Check if this room's file path matches the changed file
             let room_path = to_data_rel_path(&state.data_dir, room_key);
             if room_path == path {
-                info!("reload_file_from_disk: found matching room with key '{}' for path {}", room_key, path.display());
+                info!(
+                    "reload_file_from_disk: found matching room with key '{}' for path {}",
+                    room_key,
+                    path.display()
+                );
                 found_room = Some(entry.value().clone());
                 found_key = Some(room_key.clone());
                 break;
             }
         }
-        
+
         if let Some(room) = found_room {
             // Update the room key mapping if it was different
             if let Some(old_key) = found_key {
                 if old_key != file_key {
-                    info!("reload_file_from_disk: updating room key from '{}' to '{}'", old_key, file_key);
+                    info!(
+                        "reload_file_from_disk: updating room key from '{}' to '{}'",
+                        old_key, file_key
+                    );
                     state.rooms.remove(&old_key);
                     state.rooms.insert(file_key.to_string(), room.clone());
                 }
@@ -2176,28 +2600,38 @@ async fn reload_file_from_disk(state: &AppState, file_key: &str, path: &Path) ->
             room
         }
     };
-    
+
     // Check if content actually changed
     let current_content = room.content.read().await.clone();
     if current_content == new_content {
         // No change, skip
-        info!("reload_file_from_disk: content unchanged for {}, skipping broadcast", file_key);
+        info!(
+            "reload_file_from_disk: content unchanged for {}, skipping broadcast",
+            file_key
+        );
         return Ok(());
     }
-    
-    info!("reload_file_from_disk: content changed for {} (old: {} bytes, new: {} bytes)", 
-          file_key, current_content.len(), new_content.len());
-    
+
+    info!(
+        "reload_file_from_disk: content changed for {} (old: {} bytes, new: {} bytes)",
+        file_key,
+        current_content.len(),
+        new_content.len()
+    );
+
     // Update room content
     {
         let mut guard = room.content.write().await;
         *guard = new_content.clone();
         room.version.fetch_add(1, Ordering::SeqCst);
     }
-    
+
     let version = room.version.load(Ordering::SeqCst);
-    info!("Reloaded file {} from disk (external change), version {}, broadcasting update", file_key, version);
-    
+    info!(
+        "Reloaded file {} from disk (external change), version {}, broadcasting update",
+        file_key, version
+    );
+
     // Broadcast update to all connected clients
     let update_msg = ServerWsMessage::Update {
         version,
@@ -2207,10 +2641,16 @@ async fn reload_file_from_disk(state: &AppState, file_key: &str, path: &Path) ->
     };
     let send_result = room.tx.send(update_msg);
     match send_result {
-        Ok(_) => info!("reload_file_from_disk: successfully broadcast update for {}", file_key),
-        Err(e) => error!("reload_file_from_disk: failed to broadcast update for {}: {e}", file_key),
+        Ok(_) => info!(
+            "reload_file_from_disk: successfully broadcast update for {}",
+            file_key
+        ),
+        Err(e) => error!(
+            "reload_file_from_disk: failed to broadcast update for {}: {e}",
+            file_key
+        ),
     }
-    
+
     Ok(())
 }
 
@@ -2257,23 +2697,28 @@ async fn api_list_versions(
     let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    
+
     let Some(path) = q.get("path") else {
         return (StatusCode::BAD_REQUEST, "missing path").into_response();
     };
-    
+
     let Some(safe) = sanitize_rel_path(path) else {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     };
-    
+
     match state.git_manager.list_versions(&safe).await {
         Ok(versions) => Json(serde_json::json!({
             "file": safe,
             "versions": versions
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => {
             error!("Failed to list versions: {e:?}");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to list versions: {e}")).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to list versions: {e}"),
+            )
+                .into_response()
         }
     }
 }
@@ -2285,49 +2730,61 @@ async fn api_restore_version(
     Query(q): Query<std::collections::HashMap<String, String>>,
     Json(req): Json<RestoreVersionRequest>,
 ) -> impl IntoResponse {
-    let Some(username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+    let Some(username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar)
+    else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    
+
     let Some(path) = q.get("path") else {
         return (StatusCode::BAD_REQUEST, "missing path").into_response();
     };
-    
+
     let Some(safe) = sanitize_rel_path(path) else {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     };
-    
+
     // Get current version from room
     let version = if let Ok(room) = ensure_room_loaded(&state, &safe).await {
         room.version.load(Ordering::SeqCst) + 1
     } else {
         1
     };
-    
-    match state.git_manager.restore_version(&safe, &req.commit_oid, &username, version).await {
+
+    match state
+        .git_manager
+        .restore_version(&safe, &req.commit_oid, &username, version)
+        .await
+    {
         Ok(version_info) => {
             // Reload room with restored content
             if let Ok(room) = ensure_room_loaded(&state, &safe).await {
-                let content = state.git_manager.get_version_content(&safe, &req.commit_oid).await
+                let content = state
+                    .git_manager
+                    .get_version_content(&safe, &req.commit_oid)
+                    .await
                     .unwrap_or_default();
                 {
                     let mut guard = room.content.write().await;
                     *guard = content.clone();
                     room.version.store(version, Ordering::SeqCst);
                 }
-                
+
                 // Write to disk
                 let pb = to_data_rel_path(&state.data_dir, &safe);
                 if let Err(e) = fs::write(&pb, content.as_bytes()).await {
                     error!("Failed to write restored file: {e:?}");
                 }
             }
-            
+
             Json(version_info).into_response()
         }
         Err(e) => {
             error!("Failed to restore version: {e:?}");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to restore version: {e}")).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to restore version: {e}"),
+            )
+                .into_response()
         }
     }
 }
@@ -2339,18 +2796,19 @@ async fn api_checkpoint(
     Query(q): Query<std::collections::HashMap<String, String>>,
     Json(req): Json<CheckpointRequest>,
 ) -> impl IntoResponse {
-    let Some(username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
+    let Some(username) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar)
+    else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    
+
     let Some(path) = q.get("path") else {
         return (StatusCode::BAD_REQUEST, "missing path").into_response();
     };
-    
+
     let Some(safe) = sanitize_rel_path(path) else {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     };
-    
+
     // Get current content from room
     let (content, version) = if let Ok(room) = ensure_room_loaded(&state, &safe).await {
         let content = room.content.read().await.clone();
@@ -2359,33 +2817,57 @@ async fn api_checkpoint(
     } else {
         return (StatusCode::NOT_FOUND, "File not found").into_response();
     };
-    
+
     // Force commit (checkpoint)
-    let result = state.git_manager.create_version(&safe, &content, &username, version, req.message.as_deref(), true).await;
-    
+    let result = state
+        .git_manager
+        .create_version(
+            &safe,
+            &content,
+            &username,
+            version,
+            req.message.as_deref(),
+            true,
+        )
+        .await;
+
     // Push after commit if push_on_commit is enabled
     if result.is_ok() {
         let schedule = state.push_schedule.read().await;
         if schedule.push_on_commit {
-            info!("Auto-pushing checkpoint for {} to {}:{}", safe, schedule.remote_name, schedule.branch);
+            info!(
+                "Auto-pushing checkpoint for {} to {}:{}",
+                safe, schedule.remote_name, schedule.branch
+            );
             let git_mgr = state.git_manager.clone();
             let safe_clone = safe.clone();
             let remote_name = schedule.remote_name.clone();
             let branch = schedule.branch.clone();
             tokio::task::spawn(async move {
                 if let Err(e) = git_mgr.push_to_remote(&remote_name, &branch).await {
-                    error!("Failed to auto-push after checkpoint for {}: {e:?}", safe_clone);
+                    error!(
+                        "Failed to auto-push after checkpoint for {}: {e:?}",
+                        safe_clone
+                    );
                 }
             });
         }
     }
-    
+
     match result {
         Ok(Some(version_info)) => Json(version_info).into_response(),
-        Ok(None) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create checkpoint").into_response(),
+        Ok(None) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create checkpoint",
+        )
+            .into_response(),
         Err(e) => {
             error!("Failed to create checkpoint: {e:?}");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create checkpoint: {e}")).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to create checkpoint: {e}"),
+            )
+                .into_response()
         }
     }
 }
@@ -2400,16 +2882,25 @@ async fn api_set_remote(
     let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    
-    match state.git_manager.set_remote(&req.remote_name, &req.url).await {
+
+    match state
+        .git_manager
+        .set_remote(&req.remote_name, &req.url)
+        .await
+    {
         Ok(_) => Json(serde_json::json!({
             "remote_name": req.remote_name,
             "url": req.url,
             "status": "configured"
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => {
             error!("Failed to set remote: {e:?}");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to set remote: {e}")).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to set remote: {e}"),
+            )
+                .into_response()
         }
     }
 }
@@ -2424,19 +2915,28 @@ async fn api_push_to_remote(
     let Some(_u) = get_authorized_user_from_header_or_query(&state, &headers, &q, &jar) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    
+
     let remote_name = req.remote_name.unwrap_or_else(|| "origin".to_string());
     let branch = req.branch.unwrap_or_else(|| "main".to_string());
-    
-    match state.git_manager.push_to_remote(&remote_name, &branch).await {
+
+    match state
+        .git_manager
+        .push_to_remote(&remote_name, &branch)
+        .await
+    {
         Ok(_) => Json(serde_json::json!({
             "remote": remote_name,
             "branch": branch,
             "status": "pushed"
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => {
             error!("Failed to push to remote: {e:?}");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to push: {e}")).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to push: {e}"),
+            )
+                .into_response()
         }
     }
 }
@@ -2451,7 +2951,7 @@ async fn admin_page(
     if !check_admin_token(&state, &headers, &q) {
         return (StatusCode::UNAUTHORIZED, "Admin token required").into_response();
     }
-    
+
     // Serve admin HTML page
     match fs::read("static/admin.html").await {
         Ok(bytes) => {
@@ -2483,20 +2983,21 @@ async fn api_get_remote(
     if !check_admin_token(&state, &headers, &q) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    
+
     let repo_path = state.data_dir.clone();
     match tokio::task::spawn_blocking(move || {
-        let repo = git2::Repository::open(repo_path.as_path())
-            .context("Failed to open repository")?;
-        let remote = repo.find_remote("origin")
-            .or_else(|_| repo.remotes().and_then(|remotes| {
+        let repo =
+            git2::Repository::open(repo_path.as_path()).context("Failed to open repository")?;
+        let remote = repo.find_remote("origin").or_else(|_| {
+            repo.remotes().and_then(|remotes| {
                 if remotes.len() > 0 {
                     repo.find_remote(remotes.get(0).unwrap())
                 } else {
                     Err(git2::Error::from_str("No remotes found"))
                 }
-            }));
-        
+            })
+        });
+
         match remote {
             Ok(r) => {
                 let url = r.url().unwrap_or("").to_string();
@@ -2509,13 +3010,19 @@ async fn api_get_remote(
             Err(_) => Ok(GetRemoteResponse {
                 remote_name: "origin".to_string(),
                 url: "".to_string(),
-            })
+            }),
         }
-    }).await {
+    })
+    .await
+    {
         Ok(Ok(resp)) => Json(resp).into_response(),
         Ok(Err(e)) => {
             error!("Failed to get remote: {e:?}");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get remote: {e}")).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get remote: {e}"),
+            )
+                .into_response()
         }
         Err(e) => {
             error!("Task error: {e:?}");
@@ -2539,16 +3046,25 @@ async fn api_set_remote_admin(
     if !check_admin_token(&state, &headers, &q) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    
-    match state.git_manager.set_remote(&req.remote_name, &req.url).await {
+
+    match state
+        .git_manager
+        .set_remote(&req.remote_name, &req.url)
+        .await
+    {
         Ok(_) => Json(serde_json::json!({
             "remote_name": req.remote_name,
             "url": req.url,
             "status": "configured"
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => {
             error!("Failed to set remote: {e:?}");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to set remote: {e}")).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to set remote: {e}"),
+            )
+                .into_response()
         }
     }
 }
@@ -2561,7 +3077,7 @@ async fn api_get_schedule(
     if !check_admin_token(&state, &headers, &q) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    
+
     let schedule = state.push_schedule.read().await.clone();
     Json(schedule).into_response()
 }
@@ -2584,7 +3100,7 @@ async fn api_set_schedule(
     if !check_admin_token(&state, &headers, &q) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    
+
     let mut schedule = state.push_schedule.write().await;
     schedule.enabled = req.enabled;
     schedule.interval_seconds = req.interval_seconds;
@@ -2597,10 +3113,16 @@ async fn api_set_schedule(
     if let Some(push_on_commit) = req.push_on_commit {
         schedule.push_on_commit = push_on_commit;
     }
-    
-    info!("Push schedule updated: enabled={}, interval={}s, remote={}, branch={}, push_on_commit={}", 
-          schedule.enabled, schedule.interval_seconds, schedule.remote_name, schedule.branch, schedule.push_on_commit);
-    
+
+    info!(
+        "Push schedule updated: enabled={}, interval={}s, remote={}, branch={}, push_on_commit={}",
+        schedule.enabled,
+        schedule.interval_seconds,
+        schedule.remote_name,
+        schedule.branch,
+        schedule.push_on_commit
+    );
+
     Json(schedule.clone()).into_response()
 }
 
@@ -2619,10 +3141,17 @@ async fn api_test_push(
     if !check_admin_token(&state, &headers, &q) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    
-    info!("Test push requested: remote={}, branch={}", req.remote_name, req.branch);
-    
-    match state.git_manager.push_to_remote(&req.remote_name, &req.branch).await {
+
+    info!(
+        "Test push requested: remote={}, branch={}",
+        req.remote_name, req.branch
+    );
+
+    match state
+        .git_manager
+        .push_to_remote(&req.remote_name, &req.branch)
+        .await
+    {
         Ok(_) => {
             let message = format!("Successfully pushed to {}:{}", req.remote_name, req.branch);
             info!("Test push successful: {}", message);
@@ -2631,10 +3160,14 @@ async fn api_test_push(
                 "message": message,
                 "remote": req.remote_name,
                 "branch": req.branch
-            })).into_response()
+            }))
+            .into_response()
         }
         Err(e) => {
-            let error_msg = format!("Failed to push to {}:{} - {}", req.remote_name, req.branch, e);
+            let error_msg = format!(
+                "Failed to push to {}:{} - {}",
+                req.remote_name, req.branch, e
+            );
             error!("Test push failed: {}", error_msg);
             (
                 StatusCode::BAD_GATEWAY,
@@ -2643,8 +3176,9 @@ async fn api_test_push(
                     "message": error_msg,
                     "remote": req.remote_name,
                     "branch": req.branch
-                }))
-            ).into_response()
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -2653,7 +3187,7 @@ async fn api_test_push(
 async fn scheduled_push_task(state: AppState) {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    
+
     // Initialize to current time so the first push respects the configured interval
     let initial_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2662,15 +3196,15 @@ async fn scheduled_push_task(state: AppState) {
     let last_push_time = Arc::new(AtomicU64::new(initial_time));
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60)); // Check every minute
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    
+
     loop {
         interval.tick().await;
-        
+
         let schedule = state.push_schedule.read().await.clone();
         if !schedule.enabled {
             continue;
         }
-        
+
         // Check if enough time has passed since last push
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2678,14 +3212,21 @@ async fn scheduled_push_task(state: AppState) {
             .as_secs();
         let last_push = last_push_time.load(Ordering::SeqCst);
         let time_since_last = now.saturating_sub(last_push);
-        
+
         if time_since_last < schedule.interval_seconds {
             // Not time to push yet
             continue;
         }
-        
-        info!("Scheduled push: pushing to {}:{}", schedule.remote_name, schedule.branch);
-        match state.git_manager.push_to_remote(&schedule.remote_name, &schedule.branch).await {
+
+        info!(
+            "Scheduled push: pushing to {}:{}",
+            schedule.remote_name, schedule.branch
+        );
+        match state
+            .git_manager
+            .push_to_remote(&schedule.remote_name, &schedule.branch)
+            .await
+        {
             Ok(_) => {
                 info!("Scheduled push successful");
                 last_push_time.store(now, Ordering::SeqCst);
@@ -2694,9 +3235,11 @@ async fn scheduled_push_task(state: AppState) {
                 error!("Scheduled push failed: {e:?}");
                 // Still update last push time to avoid retrying immediately
                 // but use a shorter interval (5 minutes) for retries
-                last_push_time.store(now.saturating_sub(schedule.interval_seconds.saturating_sub(300)), Ordering::SeqCst);
+                last_push_time.store(
+                    now.saturating_sub(schedule.interval_seconds.saturating_sub(300)),
+                    Ordering::SeqCst,
+                );
             }
         }
     }
 }
-
