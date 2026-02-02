@@ -724,12 +724,6 @@
       if (data.event === 'save' || data.action === 'save' || data.event === 'autosave') {
         // Skip saves while loading content from server to prevent race conditions
         if (isLoadingContent) {
-          console.log('Skipping save while loading content from server');
-          return;
-        }
-        // Skip if a save is already in progress (prevents version conflicts from rapid saves)
-        if (pendingSaveVersion !== null) {
-          console.log('Skipping save while another save is in progress');
           return;
         }
         try {
@@ -745,17 +739,9 @@
           // Save via WebSocket when connected (preferred - handles versioning and persistence)
           if (ws && ws.readyState === WebSocket.OPEN) {
             selfUpdateToken++;
-            pendingSaveVersion = currentVersion; // Track that a save is in progress
+            pendingSaveVersion = currentVersion; // For showing "Saved" when we get confirmation
             ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
-            // Timeout to clear pending state if server doesn't respond (network issue)
-            setTimeout(() => {
-              if (pendingSaveVersion !== null) {
-                console.warn('Save response timeout, clearing pending state');
-                pendingSaveVersion = null;
-              }
-            }, 10000);
-            // WebSocket handler persists to disk and broadcasts; status will update when we get confirmation
-            // Don't show "Saved" yet - wait for broadcast confirmation or conflict response
+            // Status will update when we get broadcast confirmation or conflict response
             return;
           }
           // Fallback: HTTP PUT only when WebSocket is not available
@@ -811,26 +797,12 @@
           }
           (async () => {
             try {
-              // Skip if a save is already in progress
-              if (pendingSaveVersion !== null) {
-                console.log('Skipping export save while another save is in progress');
-                return;
-              }
               lastXml = xml;
               // Save via WebSocket when connected (preferred - handles versioning and persistence)
               if (ws && ws.readyState === WebSocket.OPEN) {
                 selfUpdateToken++;
-                pendingSaveVersion = currentVersion; // Track that a save is in progress
+                pendingSaveVersion = currentVersion; // For showing "Saved" when we get confirmation
                 ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
-                // Timeout to clear pending state if server doesn't respond
-                setTimeout(() => {
-                  if (pendingSaveVersion !== null) {
-                    console.warn('Save response timeout, clearing pending state');
-                    pendingSaveVersion = null;
-                  }
-                }, 10000);
-                // WebSocket handler persists to disk and broadcasts; status will update when we get confirmation
-                // Don't show "Saved" yet - wait for broadcast confirmation or conflict response
                 return;
               }
               // Fallback: HTTP PUT only when WebSocket is not available
