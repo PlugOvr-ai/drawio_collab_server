@@ -235,6 +235,24 @@
     let receiverViewState = null; // Stores receiver's view state (scale, translate) for coordinate conversion
     let pendingSaveVersion = null; // Track pending save to confirm when broadcast returns
     let isLoadingContent = false; // Prevent saves while loading content from server
+    let recentlySavedContents = []; // Track recently saved content to avoid reloading our own HTTP saves
+
+    // Helper to check if content was recently saved by us (for HTTP API case)
+    function wasRecentlySaved(content) {
+      const now = Date.now();
+      // Clean up old entries (older than 5 seconds)
+      recentlySavedContents = recentlySavedContents.filter(e => now - e.time < 5000);
+      // Check if content matches any recent save
+      return recentlySavedContents.some(e => e.content === content);
+    }
+
+    function markContentSaved(content) {
+      recentlySavedContents.push({ content, time: Date.now() });
+      // Keep only last 5 entries
+      if (recentlySavedContents.length > 5) {
+        recentlySavedContents.shift();
+      }
+    }
 
     // Helper function to add token to URLs
     function addTokenToUrl(url) {
@@ -371,17 +389,21 @@
             }
           } else if (msg.type === 'update') {
             const fromSelf = (msg.sender_id && myClientId && msg.sender_id === myClientId) || false;
+            // Also check if this content was recently saved by us (covers HTTP API case)
+            const isOurContent = fromSelf || wasRecentlySaved(msg.content);
             // Always update our version tracker (even for self updates) to stay in sync
             currentVersion = msg.version || currentVersion;
             $('version').textContent = 'v' + currentVersion;
-            // For self updates: confirm pending save was successful
-            if (fromSelf) {
+            // For self updates or our recently saved content: confirm and skip reload
+            if (isOurContent) {
               if (pendingSaveVersion !== null) {
                 pendingSaveVersion = null;
                 $('status').textContent = 'Saved';
                 postToEditor({ action: 'status', modified: false });
               }
-              return; // Skip content reload for our own updates (we already have the content)
+              // Update lastXml to stay in sync but don't reload editor
+              if (msg.content) { lastXml = msg.content; }
+              return; // Skip content reload for our own updates
             }
             if (msg.content && msg.content !== lastXml) {
               const isAiUpdate = msg.username === 'ai';
@@ -737,6 +759,7 @@
             return; // continue when we receive export
           }
           lastXml = xml;
+          markContentSaved(xml); // Track this content to avoid reloading it if we receive it back
           // Save via WebSocket when connected (preferred - handles versioning and persistence)
           if (ws && ws.readyState === WebSocket.OPEN) {
             selfUpdateToken++;
@@ -804,6 +827,7 @@
           (async () => {
             try {
               lastXml = xml;
+              markContentSaved(xml); // Track this content to avoid reloading it if we receive it back
               // Save via WebSocket when connected (preferred - handles versioning and persistence)
               if (ws && ws.readyState === WebSocket.OPEN) {
                 selfUpdateToken++;
@@ -1058,6 +1082,7 @@
         }
 
         // Save the file first to update the room (with version check)
+        markContentSaved(xml); // Track this content to avoid reloading it from broadcast
         const saveResp = await fetch(addTokenToUrl(`/api/file?path=${encodeURIComponent(filePath)}`), {
           method: 'PUT',
           credentials: 'include',
