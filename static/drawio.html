@@ -235,24 +235,6 @@
     let receiverViewState = null; // Stores receiver's view state (scale, translate) for coordinate conversion
     let pendingSaveVersion = null; // Track pending save to confirm when broadcast returns
     let isLoadingContent = false; // Prevent saves while loading content from server
-    let recentlySavedContents = []; // Track recently saved content to avoid reloading our own HTTP saves
-
-    // Helper to check if content was recently saved by us (for HTTP API case)
-    function wasRecentlySaved(content) {
-      const now = Date.now();
-      // Clean up old entries (older than 5 seconds)
-      recentlySavedContents = recentlySavedContents.filter(e => now - e.time < 5000);
-      // Check if content matches any recent save
-      return recentlySavedContents.some(e => e.content === content);
-    }
-
-    function markContentSaved(content) {
-      recentlySavedContents.push({ content, time: Date.now() });
-      // Keep only last 5 entries
-      if (recentlySavedContents.length > 5) {
-        recentlySavedContents.shift();
-      }
-    }
 
     // Helper function to add token to URLs
     function addTokenToUrl(url) {
@@ -389,21 +371,17 @@
             }
           } else if (msg.type === 'update') {
             const fromSelf = (msg.sender_id && myClientId && msg.sender_id === myClientId) || false;
-            // Also check if this content was recently saved by us (covers HTTP API case)
-            const isOurContent = fromSelf || wasRecentlySaved(msg.content);
             // Always update our version tracker (even for self updates) to stay in sync
             currentVersion = msg.version || currentVersion;
             $('version').textContent = 'v' + currentVersion;
-            // For self updates or our recently saved content: confirm and skip reload
-            if (isOurContent) {
+            // For self updates: confirm pending save was successful
+            if (fromSelf) {
               if (pendingSaveVersion !== null) {
                 pendingSaveVersion = null;
                 $('status').textContent = 'Saved';
                 postToEditor({ action: 'status', modified: false });
               }
-              // Update lastXml to stay in sync but don't reload editor
-              if (msg.content) { lastXml = msg.content; }
-              return; // Skip content reload for our own updates
+              return; // Skip content reload for our own updates (we already have the content)
             }
             if (msg.content && msg.content !== lastXml) {
               const isAiUpdate = msg.username === 'ai';
@@ -749,6 +727,11 @@
           console.log('Skipping save while loading content from server');
           return;
         }
+        // Skip if a save is already in progress (prevents version conflicts from rapid saves)
+        if (pendingSaveVersion !== null) {
+          console.log('Skipping save while another save is in progress');
+          return;
+        }
         try {
           $('status').textContent = 'Saving...';
           let xml = data.xml || '';
@@ -759,16 +742,18 @@
             return; // continue when we receive export
           }
           lastXml = xml;
-          markContentSaved(xml); // Track this content to avoid reloading it if we receive it back
           // Save via WebSocket when connected (preferred - handles versioning and persistence)
           if (ws && ws.readyState === WebSocket.OPEN) {
             selfUpdateToken++;
-            const saveVersion = currentVersion;
-            pendingSaveVersion = saveVersion; // Track which version we're saving from
-            // Optimistically increment version so rapid subsequent saves use correct version
-            currentVersion++;
-            $('version').textContent = 'v' + currentVersion;
-            ws.send(JSON.stringify({ type: 'replace', version: saveVersion, content: xml, self: selfUpdateToken }));
+            pendingSaveVersion = currentVersion; // Track that a save is in progress
+            ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
+            // Timeout to clear pending state if server doesn't respond (network issue)
+            setTimeout(() => {
+              if (pendingSaveVersion !== null) {
+                console.warn('Save response timeout, clearing pending state');
+                pendingSaveVersion = null;
+              }
+            }, 10000);
             // WebSocket handler persists to disk and broadcasts; status will update when we get confirmation
             // Don't show "Saved" yet - wait for broadcast confirmation or conflict response
             return;
@@ -826,17 +811,24 @@
           }
           (async () => {
             try {
+              // Skip if a save is already in progress
+              if (pendingSaveVersion !== null) {
+                console.log('Skipping export save while another save is in progress');
+                return;
+              }
               lastXml = xml;
-              markContentSaved(xml); // Track this content to avoid reloading it if we receive it back
               // Save via WebSocket when connected (preferred - handles versioning and persistence)
               if (ws && ws.readyState === WebSocket.OPEN) {
                 selfUpdateToken++;
-                const saveVersion = currentVersion;
-                pendingSaveVersion = saveVersion; // Track which version we're saving from
-                // Optimistically increment version so rapid subsequent saves use correct version
-                currentVersion++;
-                $('version').textContent = 'v' + currentVersion;
-                ws.send(JSON.stringify({ type: 'replace', version: saveVersion, content: xml, self: selfUpdateToken }));
+                pendingSaveVersion = currentVersion; // Track that a save is in progress
+                ws.send(JSON.stringify({ type: 'replace', version: currentVersion, content: xml, self: selfUpdateToken }));
+                // Timeout to clear pending state if server doesn't respond
+                setTimeout(() => {
+                  if (pendingSaveVersion !== null) {
+                    console.warn('Save response timeout, clearing pending state');
+                    pendingSaveVersion = null;
+                  }
+                }, 10000);
                 // WebSocket handler persists to disk and broadcasts; status will update when we get confirmation
                 // Don't show "Saved" yet - wait for broadcast confirmation or conflict response
                 return;
@@ -1082,7 +1074,6 @@
         }
 
         // Save the file first to update the room (with version check)
-        markContentSaved(xml); // Track this content to avoid reloading it from broadcast
         const saveResp = await fetch(addTokenToUrl(`/api/file?path=${encodeURIComponent(filePath)}`), {
           method: 'PUT',
           credentials: 'include',
