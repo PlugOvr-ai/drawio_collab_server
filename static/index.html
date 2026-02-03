@@ -7,16 +7,23 @@
   <title>DrawioServer - Demo</title>
   <style>
     :root {
-      --bg: #ffffff;
+      --bg: #f5f5f5;
       --panel: #ffffff;
-      --muted: #6b7280;
-      /* gray-500 */
-      --border: #e5e7eb;
-      /* gray-200 */
-      --accent: #2563eb;
-      /* blue-600 */
-      --text: #111827;
-      /* gray-900 */
+      --surface: #fafafa;
+      --muted: #605e5c;
+      --border: #edebe9;
+      --border-strong: #d2d0ce;
+      --accent: #0078d4;
+      --accent-hover: #106ebe;
+      --accent-light: #e1f0ff;
+      --text: #323130;
+      --text-secondary: #605e5c;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+      --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+      --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+      --radius: 4px;
+      --radius-lg: 8px;
+      --sidebar-width: 240px;
     }
 
     * {
@@ -24,119 +31,207 @@
     }
 
     body {
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Roboto", "Helvetica Neue", sans-serif;
       margin: 0;
       color: var(--text);
       background: var(--bg);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
     }
 
     .layout {
       display: grid;
-      grid-template-columns: 260px 1fr;
+      grid-template-columns: var(--sidebar-width) 1fr;
+      min-height: 100vh;
     }
 
     aside {
       height: 100vh;
       border-right: 1px solid var(--border);
-      background: #f8fafc;
-      padding: 16px 12px;
+      background: var(--panel);
+      padding: 12px 0;
       position: sticky;
       top: 0;
+      box-shadow: var(--shadow-sm);
     }
 
     main {
       min-height: 100vh;
-      background: #f9fafb;
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
     }
 
     header.top {
-      height: 56px;
+      min-height: 48px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 16px;
+      padding: 0 24px;
+      gap: 16px;
       border-bottom: 1px solid var(--border);
-      background: #f8fafc;
+      background: var(--panel);
       position: sticky;
       top: 0;
       z-index: 10;
+      flex-wrap: wrap;
     }
 
     .app {
-      padding: 16px;
+      padding: 24px;
+      flex: 1;
     }
 
     .card {
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 10px;
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
     }
 
     input,
     button,
     select,
     a.button {
-      background: #ffffff;
+      font-family: inherit;
+      font-size: 14px;
       color: var(--text);
+      border-radius: var(--radius);
+      padding: 8px 12px;
+      transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    input {
+      background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 10px;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+
+    input::placeholder {
+      color: var(--muted);
     }
 
     button,
     a.button {
+      background: var(--panel);
+      border: 1px solid var(--border);
       cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    button:hover,
+    a.button:hover {
+      background: var(--surface);
+      border-color: var(--border-strong);
+    }
+
+    button.primary,
+    a.button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    button.primary:hover,
+    a.button.primary:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
     }
 
     .muted {
-      color: var(--muted);
+      color: var(--text-secondary);
       font-size: 12px;
     }
 
     .nav {
-      display: grid;
-      gap: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
     }
 
     .nav a,
     .nav button {
-      display: grid;
-      grid-template-columns: 24px 1fr;
+      display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 10px 12px;
-      border-radius: 8px;
+      gap: 12px;
+      padding: 10px 16px;
+      border-radius: 0;
       background: transparent;
-      border: 1px solid transparent;
+      border: none;
+      border-left: 3px solid transparent;
       color: var(--text);
       text-decoration: none;
       width: 100%;
       text-align: left;
       font: inherit;
+      margin: 0;
     }
 
     .nav a:hover,
     .nav button:hover {
-      background: #f3f4f6;
-      border-color: var(--border);
+      background: var(--surface);
     }
 
-    .nav a:active,
-    .nav button:active {
-      border-color: var(--accent);
+    .nav a[href="#"]:not(.active):hover,
+    .nav button:hover {
+      background: #f3f2f1;
+    }
+
+    .nav .icon {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
     }
 
     .crumbs {
       display: flex;
-      gap: 8px;
+      gap: 4px;
       align-items: center;
       flex-wrap: wrap;
+      font-size: 14px;
+    }
+
+    .crumbs a {
+      color: var(--accent);
+      padding: 4px 6px;
+      margin: 0 -6px;
+      border-radius: var(--radius);
+      text-decoration: none;
+    }
+
+    .crumbs a:hover {
+      background: var(--accent-light);
+      color: var(--accent-hover);
+    }
+
+    .crumbs .separator {
+      color: var(--muted);
+      user-select: none;
+      font-size: 12px;
     }
 
     .toolbar {
       display: flex;
       gap: 8px;
       align-items: center;
+      flex-wrap: wrap;
+    }
+
+    #filter {
+      min-width: 200px;
+      max-width: 320px;
+      padding: 8px 12px 8px 32px;
+      background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23605e5c' stroke-width='2'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E") no-repeat 10px center;
     }
 
     table.files {
@@ -146,83 +241,147 @@
 
     table.files th,
     table.files td {
-      padding: 10px 12px;
+      padding: 12px 16px;
       border-bottom: 1px solid var(--border);
+      vertical-align: middle;
     }
 
     table.files th {
       color: var(--muted);
       font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
       text-align: left;
-      background: #f3f4f6;
+      background: #f3f2f1;
       position: sticky;
       top: 0;
       z-index: 2;
-      box-shadow: 0 1px 0 var(--border);
+      border-bottom: 2px solid var(--border);
     }
 
-    table.files tr:hover {
-      background: #f9fafb;
+    table.files th:last-child {
+      width: 1%;
+      min-width: 200px;
+      text-align: right;
+    }
+
+    table.files tbody tr {
+      transition: background 0.12s ease;
+    }
+
+    table.files tbody tr:hover {
+      background: #f3f2f1;
+    }
+
+    table.files tbody tr:hover .namecell .file-name {
+      color: var(--accent);
+    }
+
+    table.files tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    /* Show row actions on hover (desktop); keep visible on touch */
+    @media (hover: hover) {
+      table.files tbody tr .row-actions {
+        opacity: 0;
+        transition: opacity 0.15s ease;
+      }
+
+      table.files tbody tr:hover .row-actions,
+      table.files tbody tr .row-actions:focus-within {
+        opacity: 1;
+      }
     }
 
     .namecell {
-      display: grid;
-      grid-template-columns: 24px 1fr;
+      display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .namecell .file-name {
+      min-width: 0;
+      transition: color 0.12s ease;
     }
 
     .icon {
-      width: 16px;
-      height: 16px;
-      display: inline-block;
-      border-radius: 3px;
-      background: #9ca3af;
-      justify-self: center;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius);
+      flex-shrink: 0;
     }
 
-    .folder {
-      background: #60a5fa;
+    .icon.folder {
+      background-color: var(--accent);
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Cpath d='M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z'/%3E%3C/svg%3E") center/18px no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Cpath d='M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z'/%3E%3C/svg%3E") center/18px no-repeat;
     }
 
-    .file {
-      background: #9ca3af;
+    .icon.file {
+      background-color: var(--muted);
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpolyline points='14 2 14 8 20 8'/%3E%3Cline x1='16' y1='13' x2='8' y2='13'/%3E%3Cline x1='16' y1='17' x2='8' y2='17'/%3E%3C/svg%3E") center/18px no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpolyline points='14 2 14 8 20 8'/%3E%3Cline x1='16' y1='13' x2='8' y2='13'/%3E%3Cline x1='16' y1='17' x2='8' y2='17'/%3E%3C/svg%3E") center/18px no-repeat;
     }
 
-    .gear {
-      background: #93c5fd;
+    .icon.gear {
+      background-color: var(--muted);
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z'/%3E%3C/svg%3E") center/18px no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z'/%3E%3C/svg%3E") center/18px no-repeat;
     }
 
     .row-actions {
       display: flex;
-      gap: 8px;
+      gap: 6px;
       justify-content: flex-end;
+      flex-wrap: nowrap;
+      align-items: center;
     }
 
-    /* Uniform action button look */
     .row-actions a,
     .row-actions button {
-      background: #ffffff;
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: var(--radius);
+      white-space: nowrap;
+    }
+
+    /* Empty state when no files */
+    .files-empty {
+      padding: 48px 24px;
+      text-align: center;
+      color: var(--muted);
+      background: var(--panel);
+    }
+
+    .files-empty-title {
+      font-size: 16px;
+      font-weight: 600;
       color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 6px 12px;
-      text-decoration: none;
-      font: inherit;
+      margin-bottom: 8px;
     }
 
-    .row-actions a:hover,
-    .row-actions button:hover {
-      background: #f3f4f6;
+    .files-empty-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 20px;
     }
 
-    /* Version history modal (SharePoint-style) */
+    /* Version history modal */
     .version-history-backdrop {
       display: none;
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.35);
+      background: rgba(0, 0, 0, 0.4);
       z-index: 40;
+      backdrop-filter: blur(2px);
     }
 
     .version-history-modal {
@@ -231,21 +390,21 @@
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      width: min(1000px, 98vw);
-      max-height: 85vh;
+      width: min(960px, 94vw);
+      max-height: 88vh;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 12px;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.12);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
       z-index: 50;
       overflow: hidden;
       flex-direction: column;
     }
 
     .version-history-modal .vhm-header {
-      padding: 16px 20px;
+      padding: 16px 24px;
       border-bottom: 1px solid var(--border);
-      background: #f8fafc;
+      background: var(--panel);
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -254,13 +413,13 @@
 
     .version-history-modal .vhm-title {
       font-weight: 600;
-      font-size: 1rem;
+      font-size: 16px;
       color: var(--text);
     }
 
     .version-history-modal .vhm-body {
       overflow: auto;
-      padding: 16px 20px;
+      padding: 20px 24px;
       flex: 1;
       min-height: 0;
     }
@@ -273,11 +432,13 @@
     .version-history-modal th {
       text-align: left;
       padding: 10px 12px;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
       color: var(--muted);
       border-bottom: 1px solid var(--border);
-      background: #f8fafc;
+      background: var(--surface);
     }
 
     .version-history-modal td {
@@ -287,7 +448,7 @@
     }
 
     .version-history-modal tr:hover {
-      background: #f9fafb;
+      background: var(--surface);
     }
 
     .version-history-modal .version-date-absolute {
@@ -334,19 +495,24 @@
     }
 
     .version-history-modal .version-actions .btn-restore {
-      background: #dbeafe;
-      color: #1d4ed8;
-      border-color: #93c5fd;
+      background: var(--accent-light);
+      color: var(--accent);
+      border-color: transparent;
     }
 
     .version-history-modal .version-actions .btn-restore:hover {
-      background: #bfdbfe;
+      background: #cce4ff;
     }
 
     .version-history-empty {
       color: var(--muted);
-      padding: 24px;
+      padding: 32px;
       text-align: center;
+    }
+
+    /* Settings modal */
+    .settings-backdrop {
+      backdrop-filter: blur(2px);
     }
   </style>
 </head>
@@ -354,6 +520,9 @@
 <body>
   <div class="layout">
     <aside>
+      <div class="brand"
+        style="padding: 14px 16px 8px; font-weight: 600; font-size: 15px; color: var(--text); border-bottom: 1px solid var(--border); margin-bottom: 8px;">
+        Drawio</div>
       <div class="nav">
         <a href="#" id="nav-root"><span class="icon folder"></span><span>My files</span></a>
         <button id="nav-new-folder"><span class="icon folder"></span><span>New folder</span></button>
@@ -370,19 +539,28 @@
         <div class="toolbar">
           <input id="filter" placeholder="Search" />
           <button id="refresh">Refresh</button>
-          <button id="upload-btn">Upload</button>
+          <button id="upload-btn" class="primary">Upload</button>
           <span class="muted" id="greeting">Hello, guest</span>
         </div>
       </header>
       <div class="app">
-        <div class="card" style="overflow: auto;">
+        <div class="card file-list-card" style="overflow: auto;">
+          <div id="files-empty" class="files-empty" style="display: none;">
+            <div class="files-empty-title" id="files-empty-title">No files in this folder</div>
+            <p class="muted" id="files-empty-desc" style="margin: 0;">Upload a diagram or create a new file to get
+              started.</p>
+            <div class="files-empty-actions" id="files-empty-actions">
+              <button type="button" id="empty-upload-btn" class="primary">Upload file</button>
+              <button type="button" id="empty-new-file-btn">New file</button>
+            </div>
+          </div>
           <table class="files" id="file-table">
             <thead>
               <tr>
                 <th style="width:50%;">Name</th>
                 <th style="width:20%;">Size</th>
                 <th style="width:30%;">Last modified</th>
-                <th></th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody id="file-tbody"></tbody>
@@ -398,7 +576,7 @@
   <div id="version-history-modal" class="version-history-modal">
     <div class="vhm-header">
       <span class="vhm-title" id="version-history-title">Version history</span>
-      <button id="version-history-close">Close</button>
+      <button type="button" id="version-history-close">Close</button>
     </div>
     <div class="vhm-body">
       <div id="version-history-loading" class="version-history-empty" style="display:none;">Loading versions…</div>
@@ -420,18 +598,20 @@
     </div>
   </div>
   <!-- Settings modal -->
-  <div id="settings-backdrop"
-    style="display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 40;"></div>
-  <div id="settings-modal" class="card"
-    style="display:none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(440px, 92vw); padding: 16px; z-index: 50;">
-    <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-      <strong>Settings</strong>
-      <button id="settings-close">Close</button>
-    </div>
-    <div style="display:grid; gap:8px;">
-      <label class="muted">Display name</label>
-      <input id="settings-name" placeholder="display name" />
-      <button id="settings-save">Save</button>
+  <div id="settings-backdrop" class="settings-backdrop"
+    style="display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 40;"></div>
+  <div id="settings-modal" class="settings-modal"
+    style="display:none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(400px, 92vw); z-index: 50;">
+    <div class="card" style="padding: 24px; box-shadow: var(--shadow-lg);">
+      <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <strong style="font-size: 18px;">Settings</strong>
+        <button id="settings-close">Close</button>
+      </div>
+      <div style="display:grid; gap: 12px;">
+        <label class="muted" style="font-size: 13px;">Display name</label>
+        <input id="settings-name" placeholder="Your display name" />
+        <button id="settings-save" class="primary" style="margin-top: 8px;">Save</button>
+      </div>
     </div>
   </div>
   <script>
@@ -481,12 +661,28 @@
       }
     }
     async function refreshFiles() {
+      const filesEmptyEl = $('files-empty');
+      const fileTableEl = $('file-table');
       fileBody.innerHTML = '';
       try {
         updateBreadcrumbs();
         const files = await fetchJSON('/api/list?path=' + encodeURIComponent(cwd));
         const q = ($('filter')?.value || '').toLowerCase();
-        for (const f of files.filter(x => !q || x.name.toLowerCase().includes(q))) {
+        const filtered = files.filter(x => !q || x.name.toLowerCase().includes(q));
+        if (filtered.length === 0) {
+          if (filesEmptyEl) {
+            filesEmptyEl.style.display = 'block';
+            const isSearch = q.length > 0 && files.length > 0;
+            $('files-empty-title').textContent = isSearch ? 'No matching files' : 'No files in this folder';
+            $('files-empty-desc').textContent = isSearch ? 'Try a different search term.' : 'Upload a diagram or create a new file to get started.';
+            $('files-empty-actions').style.display = isSearch ? 'none' : 'flex';
+          }
+          if (fileTableEl) fileTableEl.style.display = 'none';
+        } else {
+          if (filesEmptyEl) filesEmptyEl.style.display = 'none';
+          if (fileTableEl) fileTableEl.style.display = 'table';
+        }
+        for (const f of filtered) {
           const tr = document.createElement('tr');
           const tdName = document.createElement('td');
           const tdSize = document.createElement('td');
@@ -496,11 +692,13 @@
           nameCell.className = 'namecell';
           const dot = document.createElement('span');
           dot.className = 'icon ' + (f.is_dir ? 'folder' : 'file');
-          const label = document.createElement('div');
+          const label = document.createElement('span');
+          label.className = 'file-name';
           label.textContent = f.name + (f.is_dir ? '/' : '');
           label.style.whiteSpace = 'nowrap';
           label.style.overflow = 'hidden';
           label.style.textOverflow = 'ellipsis';
+          label.style.display = 'block';
           nameCell.appendChild(dot);
           nameCell.appendChild(label);
           tdName.appendChild(nameCell);
@@ -696,6 +894,8 @@
     if (navUpload) {
       navUpload.onclick = () => fileInput.click();
     }
+    $('empty-upload-btn')?.addEventListener('click', () => fileInput?.click());
+    $('empty-new-file-btn')?.addEventListener('click', () => $('nav-new-file')?.click());
 
     $('nav-new-folder').onclick = async () => {
       const name = prompt('Folder name:');
@@ -720,17 +920,20 @@
       crumbs.innerHTML = '';
       const root = document.createElement('a');
       root.href = '#';
-      root.textContent = 'root';
-      root.className = 'button';
-      root.onclick = () => { cwd = ''; refreshFiles(); };
+      root.textContent = 'My files';
+      root.onclick = (e) => { e.preventDefault(); cwd = ''; refreshFiles(); };
       crumbs.appendChild(root);
       let pathAcc = '';
       for (const p of parts) {
+        const sep = document.createElement('span');
+        sep.className = 'separator';
+        sep.textContent = '›';
+        sep.setAttribute('aria-hidden', 'true');
+        crumbs.appendChild(sep);
         pathAcc = pathAcc ? (pathAcc + '/' + p) : p;
         const a = document.createElement('a');
         a.href = '#';
         a.textContent = p;
-        a.className = 'button';
         const jump = pathAcc;
         a.onclick = (e) => { e.preventDefault(); cwd = jump; refreshFiles(); };
         crumbs.appendChild(a);
