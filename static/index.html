@@ -290,13 +290,21 @@
       background: #f9fafb;
     }
 
-    .version-history-modal .version-num {
+    .version-history-modal .version-date-absolute {
       font-weight: 600;
       color: var(--accent);
+      white-space: nowrap;
     }
 
     .version-history-modal .version-date {
       color: var(--text);
+      white-space: nowrap;
+    }
+
+    .version-history-modal .version-commit {
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      color: var(--muted);
       white-space: nowrap;
     }
 
@@ -399,8 +407,9 @@
       <table id="version-history-table" style="display:none;">
         <thead>
           <tr>
-            <th>Version</th>
+            <th>Date</th>
             <th>Modified</th>
+            <th>Commit</th>
             <th>Modified by</th>
             <th>Description</th>
             <th></th>
@@ -777,6 +786,11 @@
       if (diffD < 7) return diffD + ' day' + (diffD === 1 ? '' : 's') + ' ago';
       return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
+    function formatVersionDateAbsolute(isoStr) {
+      if (!isoStr) return '–';
+      const d = new Date(isoStr);
+      return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) + ', ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    }
 
     function openVersionHistory(filePath, fileName) {
       versionHistoryFilePath = filePath;
@@ -810,12 +824,15 @@
         vhEmpty.style.display = 'none';
         vhTable.style.display = 'table';
         vhTbody.innerHTML = '';
-        versions.forEach((v, idx) => {
+        versions.forEach((v) => {
           const tr = document.createElement('tr');
           const ts = v.timestamp || '';
+          const shortHash = (v.commit_oid || '').substring(0, 7);
+          const commitTitle = (v.commit_oid || '').replace(/"/g, '&quot;');
           tr.innerHTML =
-            '<td class="version-num">' + (v.version || ('v' + (idx + 1))) + '</td>' +
+            '<td class="version-date-absolute">' + formatVersionDateAbsolute(ts) + '</td>' +
             '<td class="version-date">' + formatVersionDate(ts) + '</td>' +
+            '<td class="version-commit" title="' + commitTitle + '">' + (shortHash || '–') + '</td>' +
             '<td class="version-by">' + (v.username || '–') + '</td>' +
             '<td class="version-msg" title="' + (v.message || '').replace(/"/g, '&quot;') + '">' + (v.message || '–') + '</td>' +
             '<td><div class="version-actions"></div></td>';
