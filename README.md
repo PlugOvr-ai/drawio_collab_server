@@ -4,9 +4,9 @@ A collaborative draw.io server built with Rust and Axum.
 
 ## Demo
 
-[![Watch the demo](demo-thumb.png)](demo.mp4)
+![Demo](demo.gif)
 
-*Click the image to play the video.*
+*[Watch the full video (with audio)](demo.mp4)*
 
 ## Quick Start
 
