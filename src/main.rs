@@ -203,8 +203,8 @@ struct MkdirBody {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "drawioserver")]
-#[command(about = "Axum server for collaborative draw.io editing")]
+#[command(name = "drawio_collab_server")]
+#[command(about = "Drawio Collab Server - collaborative draw.io editing")]
 struct Args {
     /// Require token for all file operations (like Jupyter). Also disables /login.
     #[arg(long, env = "DRAWIO_REQUIRE_TOKEN", default_value_t = true)]

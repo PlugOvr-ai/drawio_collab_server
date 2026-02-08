@@ -244,7 +244,7 @@ data/
 ```bash
 # Initialize repository
 git init data/
-git config user.name "Draw.io Server"
+git config user.name "Drawio Collab Server"
 git config user.email "server@drawio.local"
 
 # Configure for XML files
@@ -329,7 +329,7 @@ impl GitVersionManager {
         
         // Configure repository
         let mut config = repo.config()?;
-        config.set_str("user.name", "Draw.io Server")?;
+        config.set_str("user.name", "Drawio Collab Server")?;
         config.set_str("user.email", "server@drawio.local")?;
         
         Ok(Self { repo, data_dir })

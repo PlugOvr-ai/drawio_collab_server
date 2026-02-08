@@ -56,7 +56,7 @@ impl GitVersionManager {
                 .context("Failed to open Git repository")?;
             let mut config = repo.config()
                 .context("Failed to get Git config")?;
-            config.set_str("user.name", "Draw.io Server")
+            config.set_str("user.name", "Drawio Collab Server")
                 .context("Failed to set Git user.name")?;
             config.set_str("user.email", "server@drawio.local")
                 .context("Failed to set Git user.email")?;

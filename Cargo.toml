@@ -1,5 +1,5 @@
 [package]
-name = "drawio_server"
+name = "drawio_collab_server"
 version = "0.1.0"
 edition = "2021"
 
