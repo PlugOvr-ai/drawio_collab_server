@@ -906,13 +906,48 @@
       refreshFiles();
     };
     $('nav-new-file').onclick = async () => {
-      const name = prompt('New diagram name (ends with .drawio):');
-      if (!name || !name.endsWith('.drawio')) return;
-      const full = cwd ? (cwd + '/' + name) : name;
+      const name = prompt('New diagram name:');
+      if (!name) return;
+      // Validate and process the filename
+      let finalName = name.trim();
+      if (!finalName.includes('.')) {
+        // No extension at all - add .drawio
+        finalName = finalName + '.drawio';
+      } else if (!finalName.endsWith('.drawio')) {
+        // Has an extension but not .drawio - show error
+        const lastDot = finalName.lastIndexOf('.');
+        const extension = finalName.substring(lastDot + 1).toLowerCase();
+        alert(`Unsupported file extension ".${extension}". Only .drawio files are supported.`);
+        return;
+      }
+      // If it already ends with .drawio, keep it as-is
+      const full = cwd ? (cwd + '/' + finalName) : finalName;
+
+      // Check if file already exists
+      try {
+        const files = await fetchJSON('/api/list?path=' + encodeURIComponent(cwd));
+        const fileExists = files.some(f => !f.is_dir && f.name === finalName);
+        if (fileExists) {
+          alert(`File "${finalName}" already exists. Please choose a different name.`);
+          return;
+        }
+      } catch (e) {
+        // If we can't check, proceed anyway (server will handle it)
+        console.warn('Could not check if file exists:', e);
+      }
+
       const content = getTemplateXml('blank');
-      const res = await fetch(addTokenToUrl(`/api/file?path=${encodeURIComponent(full)}`), { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) });
-      if (!res.ok) return alert(await res.text());
-      refreshFiles();
+      try {
+        const res = await fetch(addTokenToUrl(`/api/file?path=${encodeURIComponent(full)}`), { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) });
+        if (!res.ok) {
+          const errorText = await res.text();
+          alert('Failed to create file: ' + (errorText || `HTTP ${res.status}`));
+          return;
+        }
+        refreshFiles();
+      } catch (e) {
+        alert('Failed to create file: ' + (e.message || 'Unknown error'));
+      }
     };
 
     function updateBreadcrumbs() {
