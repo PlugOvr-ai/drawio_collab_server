@@ -237,6 +237,7 @@
     let receiverViewState = null; // Stores receiver's view state (scale, translate) for coordinate conversion
     let pendingSaveVersion = null; // Track pending save to confirm when broadcast returns
     let isLoadingContent = false; // Prevent saves while loading content from server
+    let myCurrentPage = null; // Track which draw.io page/tab we're viewing
 
     // Normalize XML by removing metadata that changes when switching tabs/pages
     // This helps detect if actual content changed vs just tab switching
@@ -411,21 +412,45 @@
           } else if (msg.type === 'presence_snapshot') {
             for (const u of msg.users || []) {
               ensureCursor(u.username, u.color);
+              if (u.page) {
+                const c = cursors.get(u.username);
+                if (c) c.page = u.page;
+              }
             }
+            updateCursorVisibility();
           } else if (msg.type === 'presence_join') {
             ensureCursor(msg.username, msg.color);
           } else if (msg.type === 'presence_leave') {
             removeCursor(msg.username);
+          } else if (msg.type === 'page_change') {
+            const fromSelf = (msg.sender_id && myClientId && msg.sender_id === myClientId) || (msg.username && msg.username === myUsername);
+            if (!fromSelf) {
+              const c = cursors.get(msg.username);
+              if (c) {
+                c.page = msg.page;
+                updateCursorVisibility();
+              }
+            }
           } else if (msg.type === 'cursor') {
             const fromSelf = (msg.sender_id && myClientId && msg.sender_id === myClientId) || (msg.username && msg.username === myUsername);
-            if (!fromSelf) { moveCursor(msg.username, msg.x, msg.y, msg.basis); }
+            if (!fromSelf) {
+              const c = cursors.get(msg.username);
+              if (c && msg.page) c.page = msg.page;
+              const samePageOrUnknown = !myCurrentPage || !msg.page || msg.page === myCurrentPage;
+              if (samePageOrUnknown) {
+                moveCursor(msg.username, msg.x, msg.y, msg.basis);
+              }
+              updateCursorVisibility();
+            }
           } else if (msg.type === 'selection') {
             const fromSelf = (msg.sender_id && myClientId && msg.sender_id === myClientId) || (msg.username && msg.username === myUsername);
             if (!fromSelf) {
               const c = cursors.get(msg.username);
               if (c) {
                 const n = (msg.ids || []).length;
-                c.selEl.style.display = n > 0 ? 'block' : 'none';
+                // Only show selection badge if on the same page
+                const samePageOrUnknown = !myCurrentPage || !c.page || c.page === myCurrentPage;
+                c.selEl.style.display = (n > 0 && samePageOrUnknown) ? 'block' : 'none';
                 c.selEl.textContent = n > 0 ? `${n} selected` : '';
               }
             }
@@ -663,6 +688,51 @@
     // Update receiver view state periodically
     setInterval(updateReceiverViewState, 500);
 
+    // ---- Page/tab tracking ----
+    // Detect which draw.io page the user is viewing by reading the iframe DOM directly.
+    // The active tab element has class "geActivePage" and its title contains the page ID
+    // in parentheses, e.g. "Page-2 (VOHyqxg89PHJmbStgbyr) [2]".
+
+    function getCurrentPageFromIframe() {
+      try {
+        const iframe = $('editor');
+        const childDoc = iframe.contentWindow.document;
+        const tab = childDoc.querySelector('.geActivePage');
+        if (!tab) return null;
+        const title = tab.getAttribute('title') || '';
+        const m = title.match(/\(([^)]+)\)/);
+        return m ? m[1] : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function setMyCurrentPage(pageId) {
+      if (!pageId || pageId === myCurrentPage) return;
+      myCurrentPage = pageId;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'page_change', page: myCurrentPage }));
+      }
+      updateCursorVisibility();
+    }
+
+    // Show/hide cursors based on whether they are on the same page as us
+    function updateCursorVisibility() {
+      for (const [username, c] of cursors) {
+        if (myCurrentPage && c.page && c.page !== myCurrentPage) {
+          c.el.style.display = 'none';
+        } else {
+          c.el.style.display = '';
+        }
+      }
+    }
+
+    // Poll the iframe DOM for the active page every 300ms
+    setInterval(() => {
+      const pageId = getCurrentPageFromIframe();
+      if (pageId) setMyCurrentPage(pageId);
+    }, 300);
+
     // If the iframe is same-origin (when you self-host draw.io), attach direct mouse tracking for precise cursors
     function attachSameOriginMouseTracking() {
       const iframe = $('editor');
@@ -686,8 +756,9 @@
             const absoluteX = e.clientX - bgPageRect.left;
             const absoluteY = e.clientY - bgPageRect.top;
             // Send absolute coordinates directly (no normalization)
-            //console.log('SEND TO WS: cursor', absoluteX, absoluteY);
-            ws.send(JSON.stringify({ type: 'cursor', x: absoluteX, y: absoluteY }));
+            const cursorMsg = { type: 'cursor', x: absoluteX, y: absoluteY };
+            if (myCurrentPage) cursorMsg.page = myCurrentPage;
+            ws.send(JSON.stringify(cursorMsg));
           }
         }, { passive: true });
         // Also update view state when tracking is attached
@@ -773,12 +844,14 @@
           if (ws && ws.readyState === WebSocket.OPEN) {
             // Send absolute coordinates relative to geBackgroundPage origin directly (no normalization)
             if (typeof data.absoluteX === 'number' && typeof data.absoluteY === 'number') {
-              // Send absolute coordinates relative to geBackgroundPage origin
-              ws.send(JSON.stringify({ type: 'cursor', x: data.absoluteX, y: data.absoluteY }));
+              const cursorMsg = { type: 'cursor', x: data.absoluteX, y: data.absoluteY };
+              if (myCurrentPage) cursorMsg.page = myCurrentPage;
+              ws.send(JSON.stringify(cursorMsg));
               lastEmbedMoveAt = performance.now();
             } else if (typeof data.x === 'number' && typeof data.y === 'number') {
-              // Fallback: if no absolute coordinates, send screen coordinates (legacy support)
-              ws.send(JSON.stringify({ type: 'cursor', x: data.x, y: data.y }));
+              const cursorMsg = { type: 'cursor', x: data.x, y: data.y };
+              if (myCurrentPage) cursorMsg.page = myCurrentPage;
+              ws.send(JSON.stringify(cursorMsg));
               lastEmbedMoveAt = performance.now();
             }
           }
@@ -979,7 +1052,7 @@
       el.appendChild(label);
       el.appendChild(selEl);
       $('overlay').appendChild(el);
-      cursors.set(username, { el, color, selEl });
+      cursors.set(username, { el, color, selEl, page: null });
     }
     function removeCursor(username) {
       const c = cursors.get(username);
@@ -1090,19 +1163,24 @@
           // Calculate absolute coordinates relative to geBackgroundPage origin
           const absoluteX = (e.clientX - iframeRect.left) - bgPageRect.left;
           const absoluteY = (e.clientY - iframeRect.top) - bgPageRect.top;
-          //console.log('SEND TO WS: cursor', absoluteX, absoluteY);
-          ws.send(JSON.stringify({ type: 'cursor', x: absoluteX, y: absoluteY }));
+          const cursorMsg = { type: 'cursor', x: absoluteX, y: absoluteY };
+          if (myCurrentPage) cursorMsg.page = myCurrentPage;
+          ws.send(JSON.stringify(cursorMsg));
         } else {
           // Fallback: send normalized coordinates if geBackgroundPage not available
           const nx = x / Math.max(1, rect.width);
           const ny = y / Math.max(1, rect.height);
-          ws.send(JSON.stringify({ type: 'cursor', x: nx, y: ny }));
+          const cursorMsg = { type: 'cursor', x: nx, y: ny };
+          if (myCurrentPage) cursorMsg.page = myCurrentPage;
+          ws.send(JSON.stringify(cursorMsg));
         }
       } catch {
         // Not same-origin or error: send normalized coordinates
         const nx = x / Math.max(1, rect.width);
         const ny = y / Math.max(1, rect.height);
-        ws.send(JSON.stringify({ type: 'cursor', x: nx, y: ny }));
+        const cursorMsg = { type: 'cursor', x: nx, y: ny };
+        if (myCurrentPage) cursorMsg.page = myCurrentPage;
+        ws.send(JSON.stringify(cursorMsg));
       }
     });
 

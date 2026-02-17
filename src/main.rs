@@ -61,7 +61,7 @@ struct Room {
     tx: broadcast::Sender<ServerWsMessage>,
     content: RwLock<String>,
     version: AtomicU64,
-    members: DashMap<String, String>, // username -> color hex
+    members: DashMap<String, MemberInfo>, // username -> member info (color, page)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -76,9 +76,13 @@ enum ClientWsMessage {
         x: f32,
         y: f32,
         basis: Option<String>,
-    }, // basis: "stage" or "overlay"
+        page: Option<String>,
+    },
     Selection {
         ids: Vec<String>,
+    },
+    PageChange {
+        page: String,
     },
 }
 
@@ -122,10 +126,17 @@ enum ServerWsMessage {
         y: f32,
         basis: Option<String>,
         sender_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        page: Option<String>,
     },
     Selection {
         username: String,
         ids: Vec<String>,
+        sender_id: String,
+    },
+    PageChange {
+        username: String,
+        page: String,
         sender_id: String,
     },
     AiStatus {
@@ -136,10 +147,18 @@ enum ServerWsMessage {
     },
 }
 
+#[derive(Clone)]
+struct MemberInfo {
+    color: String,
+    page: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct PresenceUser {
     username: String,
     color: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1036,14 +1055,21 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
     {
         // record member with color
         let color = color_for_username(&username);
-        room.members.insert(username.clone(), color.clone());
+        room.members.insert(
+            username.clone(),
+            MemberInfo {
+                color: color.clone(),
+                page: None,
+            },
+        );
         let snapshot = room
             .members
             .iter()
             .filter(|e| e.key() != &username)
             .map(|e| PresenceUser {
                 username: e.key().clone(),
-                color: e.value().clone(),
+                color: e.value().color.clone(),
+                page: e.value().page.clone(),
             })
             .collect::<Vec<_>>();
         let _ = socket
@@ -1118,7 +1144,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
                                     });
                                 }
                             }
-                            Ok(ClientWsMessage::Cursor { x, y, basis }) => {
+                            Ok(ClientWsMessage::Cursor { x, y, basis, page }) => {
                                 //let x = x.clamp(0.0, 1.0);
                                 //let y = y.clamp(0.0, 1.0);
                                 let _ = room.tx.send(ServerWsMessage::Cursor {
@@ -1126,6 +1152,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
                                     x, y,
                                     basis,
                                     sender_id: conn_id.clone(),
+                                    page,
                                 });
                             }
                             Ok(ClientWsMessage::Ping) => {
@@ -1139,6 +1166,17 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
                                 let _ = room.tx.send(ServerWsMessage::Selection {
                                     username: username.clone(),
                                     ids,
+                                    sender_id: conn_id.clone(),
+                                });
+                            }
+                            Ok(ClientWsMessage::PageChange { page }) => {
+                                // Update member's current page
+                                if let Some(mut member) = room.members.get_mut(&username) {
+                                    member.page = Some(page.clone());
+                                }
+                                let _ = room.tx.send(ServerWsMessage::PageChange {
+                                    username: username.clone(),
+                                    page,
                                     sender_id: conn_id.clone(),
                                 });
                             }
