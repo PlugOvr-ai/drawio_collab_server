@@ -733,6 +733,24 @@
       if (pageId) setMyCurrentPage(pageId);
     }, 300);
 
+    // ---- Zoom tracking ----
+    // Read the zoom level from the draw.io iframe DOM.
+    // The zoom indicator is an <a class="geTabItem" title="Zoom ...">75%</a> element.
+    let currentZoom = 1; // 1 = 100%
+
+    function pollZoom() {
+      try {
+        const iframe = $('editor');
+        const childDoc = iframe.contentWindow.document;
+        const el = childDoc.querySelector('a.geTabItem[title*="Zoom"]');
+        if (el) {
+          const m = el.textContent.trim().match(/(\d+)%/);
+          if (m) currentZoom = parseInt(m[1]) / 100;
+        }
+      } catch { }
+    }
+    setInterval(pollZoom, 500);
+
     // If the iframe is same-origin (when you self-host draw.io), attach direct mouse tracking for precise cursors
     function attachSameOriginMouseTracking() {
       const iframe = $('editor');
@@ -752,10 +770,10 @@
           const backgroundPage = childDoc.querySelector('.geBackgroundPage');
           if (backgroundPage) {
             const bgPageRect = backgroundPage.getBoundingClientRect();
-            // Calculate absolute coordinates relative to geBackgroundPage origin
-            const absoluteX = e.clientX - bgPageRect.left;
-            const absoluteY = e.clientY - bgPageRect.top;
-            // Send absolute coordinates directly (no normalization)
+            // Pixel offset from bgPage origin, then divide by zoom to get graph coordinates
+            const z = currentZoom || 1;
+            const absoluteX = (e.clientX - bgPageRect.left) / z;
+            const absoluteY = (e.clientY - bgPageRect.top) / z;
             const cursorMsg = { type: 'cursor', x: absoluteX, y: absoluteY };
             if (myCurrentPage) cursorMsg.page = myCurrentPage;
             ws.send(JSON.stringify(cursorMsg));
@@ -842,14 +860,15 @@
       if ((data.event === 'mouseMove' || data.event === 'mousemove' || data.action === 'mouseMove')) {
         try {
           if (ws && ws.readyState === WebSocket.OPEN) {
-            // Send absolute coordinates relative to geBackgroundPage origin directly (no normalization)
+            const z = currentZoom || 1;
+            // Divide by zoom to send graph (zoom-independent) coordinates
             if (typeof data.absoluteX === 'number' && typeof data.absoluteY === 'number') {
-              const cursorMsg = { type: 'cursor', x: data.absoluteX, y: data.absoluteY };
+              const cursorMsg = { type: 'cursor', x: data.absoluteX / z, y: data.absoluteY / z };
               if (myCurrentPage) cursorMsg.page = myCurrentPage;
               ws.send(JSON.stringify(cursorMsg));
               lastEmbedMoveAt = performance.now();
             } else if (typeof data.x === 'number' && typeof data.y === 'number') {
-              const cursorMsg = { type: 'cursor', x: data.x, y: data.y };
+              const cursorMsg = { type: 'cursor', x: data.x / z, y: data.y / z };
               if (myCurrentPage) cursorMsg.page = myCurrentPage;
               ws.send(JSON.stringify(cursorMsg));
               lastEmbedMoveAt = performance.now();
@@ -1096,20 +1115,17 @@
           y = ny * rect.height;
         }
       } else {
-        // nx/ny are absolute coordinates relative to geBackgroundPage origin
-        // Convert to screen coordinates using receiver's geBackgroundPage position
+        // nx/ny are graph coordinates (zoom-independent).
+        // Multiply by receiver's zoom to get pixel offset from bgPage, then add bgPage screen position.
         if (backgroundPagePosition) {
           const iframe = $('editor');
           const iframeRect = iframe.getBoundingClientRect();
           const bgPageClientLeft = backgroundPagePosition.clientLeft || 0;
           const bgPageClientTop = backgroundPagePosition.clientTop || 0;
+          const z = currentZoom || 1;
 
-          // Add receiver's geBackgroundPage position to absolute coordinates
-          // bgPageClientLeft/Top are relative to iframe viewport
-          // iframeRect.left/top are relative to parent viewport
-          // So we add: parent viewport position of iframe + iframe viewport position of bgPage + absolute coord
-          x = bgPageClientLeft + nx;
-          y = bgPageClientTop + ny;
+          x = bgPageClientLeft + nx * z;
+          y = bgPageClientTop + ny * z;
           // console.log('moveCursor debug:', {
           //  username,
           //  absoluteCoord: { nx, ny },
@@ -1160,9 +1176,10 @@
         if (backgroundPage) {
           const bgPageRect = backgroundPage.getBoundingClientRect();
           const iframeRect = iframe.getBoundingClientRect();
-          // Calculate absolute coordinates relative to geBackgroundPage origin
-          const absoluteX = (e.clientX - iframeRect.left) - bgPageRect.left;
-          const absoluteY = (e.clientY - iframeRect.top) - bgPageRect.top;
+          // Pixel offset from bgPage origin, then divide by zoom to get graph coordinates
+          const z = currentZoom || 1;
+          const absoluteX = ((e.clientX - iframeRect.left) - bgPageRect.left) / z;
+          const absoluteY = ((e.clientY - iframeRect.top) - bgPageRect.top) / z;
           const cursorMsg = { type: 'cursor', x: absoluteX, y: absoluteY };
           if (myCurrentPage) cursorMsg.page = myCurrentPage;
           ws.send(JSON.stringify(cursorMsg));
