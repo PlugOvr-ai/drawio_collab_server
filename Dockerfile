@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     unzip \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and extract drawio.war
