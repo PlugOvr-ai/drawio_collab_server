@@ -39,7 +39,7 @@ RUN mkdir -p static/diagrams && \
 COPY PostConfig.js static/diagrams/js
 
 # Copy static HTML files
-COPY static/drawio.html static/index.html static/token.html static/
+COPY static/drawio.html static/index.html static/token.html static/admin.html static/
 
 
 # Copy the binary from builder
