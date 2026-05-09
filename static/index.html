@@ -596,6 +596,19 @@
       </div>
     </main>
   </div>
+  <!-- Name prompt modal (blocking until a name is set) -->
+  <div id="name-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:90; backdrop-filter:blur(4px);">
+    <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:#fff; border-radius:12px; padding:32px 28px; width:min(380px,90vw); box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+      <h2 style="margin:0 0 6px; font-size:18px; color:#111827;">Welcome</h2>
+      <p style="margin:0 0 20px; color:#605e5c; font-size:13px;">Please enter your display name to continue. It will be saved for future visits.</p>
+      <input id="name-input" type="text" placeholder="Your display name" autocomplete="nickname"
+        style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius); font-size:15px; margin-bottom:8px; display:block; font-family:inherit;" />
+      <p id="name-error" style="margin:0 0 10px; color:#dc2626; font-size:12px; display:none;"></p>
+      <button id="name-submit" class="primary"
+        style="width:100%; padding:10px; font-size:15px;">Continue</button>
+    </div>
+  </div>
+
   <!-- Hidden file input for upload -->
   <input type="file" id="file-input" accept=".drawio" style="display: none;" />
   <!-- Version history modal (SharePoint-style) -->
@@ -651,6 +664,17 @@
 
     let cwd = '';
 
+    // Extract token from URL and save to localStorage before anything else runs
+    {
+      const urlToken = new URLSearchParams(location.search).get('token');
+      if (urlToken) {
+        localStorage.setItem('drawio_token', urlToken);
+        const _url = new URL(location);
+        _url.searchParams.delete('token');
+        history.replaceState({}, '', _url);
+      }
+    }
+
     // Helper function to add token to URLs
     function addTokenToUrl(url) {
       const storedToken = localStorage.getItem('drawio_token');
@@ -674,18 +698,82 @@
       try {
         const me = await fetchJSON('/me');
         greeting.textContent = 'Hello, ' + me.username;
-        // Store token from URL if present (for persistence across sessions)
-        const urlToken = new URLSearchParams(location.search).get('token');
-        if (urlToken) {
-          localStorage.setItem('drawio_token', urlToken);
-          // Clean URL to remove token from address bar
-          const url = new URL(location);
-          url.searchParams.delete('token');
-          history.replaceState({}, '', url);
-        }
       } catch {
         greeting.textContent = 'Hello, guest';
       }
+    }
+
+    async function ensureUserName() {
+      // Step 1: verify authentication — must succeed before we ask for a name
+      let authOk = false;
+      let currentName = null;
+      try {
+        const res = await fetch(addTokenToUrl('/me'), { credentials: 'include' });
+        if (res.status === 401) {
+          location.href = '/token.html';
+          return;
+        }
+        if (res.ok) {
+          authOk = true;
+          const me = await res.json();
+          currentName = me.username;
+        }
+      } catch {}
+      if (!authOk) { location.href = '/token.html'; return; }
+
+      // Step 2: restore saved name from localStorage if available
+      const saved = localStorage.getItem('drawio_username');
+      if (saved) {
+        try {
+          const res = await fetch(addTokenToUrl('/me'), {
+            method: 'PUT', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: saved }),
+          });
+          if (res.ok) { greeting.textContent = 'Hello, ' + saved; return; }
+        } catch {}
+      }
+
+      // Step 3: if session already has a non-default name, accept it
+      if (currentName && currentName !== 'John Doe') {
+        localStorage.setItem('drawio_username', currentName);
+        greeting.textContent = 'Hello, ' + currentName;
+        return;
+      }
+
+      // Step 4: authenticated but no name set — show blocking modal
+      await new Promise((resolve) => {
+        $('name-backdrop').style.display = 'block';
+        const input = $('name-input');
+        const errEl = $('name-error');
+        input.focus();
+        async function submit() {
+          const name = input.value.trim();
+          if (!name) { errEl.textContent = 'Please enter a name.'; errEl.style.display = 'block'; return; }
+          errEl.style.display = 'none';
+          try {
+            const res = await fetch(addTokenToUrl('/me'), {
+              method: 'PUT', credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username: name }),
+            });
+            if (res.ok) {
+              localStorage.setItem('drawio_username', name);
+              greeting.textContent = 'Hello, ' + name;
+              $('name-backdrop').style.display = 'none';
+              resolve();
+            } else {
+              errEl.textContent = 'Could not set name — try again.';
+              errEl.style.display = 'block';
+            }
+          } catch {
+            errEl.textContent = 'Network error — try again.';
+            errEl.style.display = 'block';
+          }
+        }
+        $('name-submit').onclick = submit;
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+      });
     }
     async function refreshFiles() {
       const filesEmptyEl = $('files-empty');
@@ -856,6 +944,7 @@
           body: JSON.stringify({ username }),
         });
         if (!res.ok) throw new Error(await res.text());
+        localStorage.setItem('drawio_username', username);
         await refreshMe();
         closeSettings();
       } catch (e) { alert(e.message); }
@@ -1157,8 +1246,10 @@
     $('version-history-close').onclick = closeVersionHistory;
     if (vhBackdrop) vhBackdrop.onclick = closeVersionHistory;
 
-    refreshMe();
-    refreshFiles();
+    ensureUserName().then(() => {
+      refreshMe();
+      refreshFiles();
+    });
     // Refresh the file list every 30 seconds so dirty indicators stay current
     setInterval(refreshFiles, 30000);
     // load viewer script for previews
