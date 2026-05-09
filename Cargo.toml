@@ -26,7 +26,7 @@ time = "0.3"
 clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.11", features = ["json", "rustls-tls", "stream"] }
 tokio-util = { version = "0.7", features = ["codec", "io"] }
-git2 = { version = "0.18", features = ["vendored-openssl"] }
+git2 = "0.18"
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 

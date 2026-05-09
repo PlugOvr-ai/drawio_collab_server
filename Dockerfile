@@ -8,7 +8,6 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     ca-certificates \
-    perl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy manifest files
