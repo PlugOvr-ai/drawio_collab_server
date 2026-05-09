@@ -3,7 +3,7 @@ name = "drawio_collab_server"
 version = "0.2.0"
 edition = "2021"
 license = "AGPL-3.0"
-repository = "https://github.com/PlugOvr-ai/drawio_server"
+repository = "https://github.com/PlugOvr-ai/drawio_collab_server"
 
 [dependencies]
 axum = { version = "0.7", features = ["ws", "macros", "json", "multipart"] }

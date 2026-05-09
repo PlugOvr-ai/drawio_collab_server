@@ -2,8 +2,8 @@
 
 A collaborative draw.io server built with Rust and Axum.
 
-[![CI](https://github.com/PlugOvr-ai/drawio_server/actions/workflows/ci.yml/badge.svg)](https://github.com/PlugOvr-ai/drawio_server/actions/workflows/ci.yml)
-[![Latest Release](https://img.shields.io/github/v/release/PlugOvr-ai/drawio_server)](https://github.com/PlugOvr-ai/drawio_server/releases/latest)
+[![CI](https://github.com/PlugOvr-ai/drawio_collab_server/actions/workflows/ci.yml/badge.svg)](https://github.com/PlugOvr-ai/drawio_collab_server/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/PlugOvr-ai/drawio_collab_server)](https://github.com/PlugOvr-ai/drawio_collab_server/releases/latest)
 
 ## Demo
 
