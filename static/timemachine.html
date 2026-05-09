@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Time Machine</title>
+  <style>
+    :root {
+      --bg: #f5f5f5;
+      --panel: #ffffff;
+      --border: #edebe9;
+      --border-strong: #d2d0ce;
+      --accent: #0078d4;
+      --accent-hover: #106ebe;
+      --accent-light: #e1f0ff;
+      --text: #323130;
+      --text-secondary: #605e5c;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+      --radius: 4px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%; overflow: hidden;
+      font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Roboto", sans-serif;
+      font-size: 13px;
+      background: var(--bg);
+      color: var(--text);
+    }
+    body { display: flex; flex-direction: column; }
+
+    /* ── Header ── */
+    #tm-header {
+      height: 48px;
+      flex-shrink: 0;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 16px;
+      box-shadow: var(--shadow-sm);
+    }
+    #tm-back {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 13px;
+      padding: 4px 8px;
+      border-radius: var(--radius);
+      flex-shrink: 0;
+    }
+    #tm-back:hover { background: var(--accent-light); }
+    #tm-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--text);
+      flex-shrink: 0;
+      max-width: 280px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #tm-badge {
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 2px 8px;
+      flex-shrink: 0;
+    }
+    #tm-selected-info {
+      flex: 1;
+      font-size: 12px;
+      color: var(--text-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #tm-restore-btn {
+      flex-shrink: 0;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      display: none;
+    }
+    #tm-restore-btn:hover { background: var(--accent-hover); }
+    #tm-restore-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    #tm-loading {
+      position: fixed;
+      inset: 0;
+      background: rgba(255,255,255,0.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      color: var(--text-secondary);
+      z-index: 100;
+    }
+
+    /* ── Diagram area ── */
+    #tm-diagram {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+    }
+    #tm-editor {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+    }
+    #tm-empty {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 8px;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+    #tm-empty svg { opacity: 0.3; }
+
+    /* ── Timeline panel ── */
+    #tm-timeline-panel {
+      height: 88px;
+      flex-shrink: 0;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 10px 48px;
+      gap: 0;
+      position: relative;
+    }
+    #tm-nav-prev, #tm-nav-next {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      width: 28px;
+      height: 28px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-secondary);
+      font-size: 14px;
+      transition: background 0.1s;
+    }
+    #tm-nav-prev { left: 10px; }
+    #tm-nav-next { right: 10px; }
+    #tm-nav-prev:hover, #tm-nav-next:hover { background: var(--bg); color: var(--text); }
+    #tm-nav-prev:disabled, #tm-nav-next:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* timeline track */
+    #tm-track-area {
+      position: relative;
+      height: 40px;
+      cursor: crosshair;
+      user-select: none;
+    }
+    #tm-rail {
+      position: absolute;
+      top: 50%;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: var(--border-strong);
+      border-radius: 2px;
+      transform: translateY(-50%);
+    }
+    #tm-cursor-line {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--accent);
+      border-radius: 1px;
+      pointer-events: none;
+      display: none;
+      transform: translateX(-50%);
+    }
+    .tm-dot {
+      position: absolute;
+      top: 50%;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--panel);
+      transform: translate(-50%, -50%);
+      cursor: pointer;
+      transition: transform 0.1s, box-shadow 0.1s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .tm-dot:hover {
+      transform: translate(-50%, -50%) scale(1.4);
+      box-shadow: 0 2px 6px rgba(0,120,212,0.35);
+    }
+    .tm-dot.active {
+      background: var(--panel);
+      border-color: var(--accent);
+      border-width: 3px;
+      transform: translate(-50%, -50%) scale(1.2);
+      box-shadow: 0 0 0 3px rgba(0,120,212,0.2);
+    }
+
+    /* tooltip */
+    #tm-tooltip {
+      position: fixed;
+      background: #1f2937;
+      color: #f9fafb;
+      font-size: 11px;
+      border-radius: var(--radius);
+      padding: 5px 8px;
+      pointer-events: none;
+      display: none;
+      white-space: nowrap;
+      z-index: 50;
+      max-width: 280px;
+      box-shadow: var(--shadow-md);
+    }
+
+    /* commit info bar */
+    #tm-commit-info {
+      height: 28px;
+      display: flex;
+      align-items: center;
+      font-size: 12px;
+      color: var(--text-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      gap: 6px;
+    }
+    #tm-commit-info .ci-version {
+      font-weight: 600;
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+    #tm-commit-info .ci-sep { color: var(--border-strong); flex-shrink: 0; }
+    #tm-commit-info .ci-msg {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+
+<div id="tm-loading">Loading…</div>
+
+<header id="tm-header">
+  <a id="tm-back" href="/">&#8592; Back</a>
+  <span id="tm-title">—</span>
+  <span id="tm-badge">Read-only history</span>
+  <span id="tm-selected-info"></span>
+  <button id="tm-restore-btn">Restore this version</button>
+</header>
+
+<div id="tm-diagram">
+  <iframe id="tm-editor"
+    src="/diagrams/index.html?embed=1&ui=min&proto=json&spin=1&noDevice=1&saveAndExit=1&xml=1"
+    allow="clipboard-read; clipboard-write">
+  </iframe>
+  <div id="tm-empty">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+    </svg>
+    <div>No version history for this file</div>
+  </div>
+</div>
+
+<div id="tm-timeline-panel">
+  <button id="tm-nav-prev" title="Previous version (←)">&#8592;</button>
+  <button id="tm-nav-next" title="Next version (→)">&#8594;</button>
+
+  <div id="tm-track-area">
+    <div id="tm-rail"></div>
+    <div id="tm-cursor-line"></div>
+    <!-- .tm-dot elements inserted by JS -->
+  </div>
+
+  <div id="tm-commit-info">
+    <span class="ci-version"></span>
+    <span class="ci-sep">·</span>
+    <span class="ci-author"></span>
+    <span class="ci-sep">·</span>
+    <span class="ci-time"></span>
+    <span class="ci-sep">·</span>
+    <span class="ci-msg"></span>
+  </div>
+</div>
+
+<div id="tm-tooltip"></div>
+
+<script>
+  // ── State ──────────────────────────────────────────────────────────
+  let versions = [];          // VersionInfo[], newest first (from server)
+  let activeIdx = 0;          // index into versions[]
+  let isEditorReady = false;
+  let pendingXml = null;
+  const contentCache = new Map(); // oid → xml string (LRU, max 20)
+  const inFlight = new Set();     // OIDs currently being fetched
+  let hoverDebounce = null;
+  let filePath = '';
+
+  // ── URL helpers ────────────────────────────────────────────────────
+  function addTokenToUrl(url) {
+    const t = localStorage.getItem('drawio_token');
+    if (!t) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(t);
+  }
+
+  function editorOrigin() {
+    const src = document.getElementById('tm-editor').getAttribute('src');
+    return new URL(src, window.location.origin).origin;
+  }
+
+  function postToEditor(msg) {
+    document.getElementById('tm-editor').contentWindow
+      .postMessage(JSON.stringify(msg), editorOrigin());
+  }
+
+  // ── LRU cache helpers ──────────────────────────────────────────────
+  function cacheGet(oid) { return contentCache.get(oid); }
+  function cachePut(oid, xml) {
+    contentCache.delete(oid); // move to end
+    contentCache.set(oid, xml);
+    if (contentCache.size > 20) {
+      contentCache.delete(contentCache.keys().next().value);
+    }
+  }
+
+  // ── Auth & init ────────────────────────────────────────────────────
+  async function ensureAuth() {
+    const res = await fetch(addTokenToUrl('/me'), { credentials: 'include' });
+    if (res.status === 401) { location.href = '/token.html'; throw new Error('401'); }
+    if (!res.ok) throw new Error('auth failed');
+  }
+
+  async function init() {
+    const params = new URLSearchParams(location.search);
+    const token = params.get('token');
+    if (token) {
+      localStorage.setItem('drawio_token', token);
+      const u = new URL(location);
+      u.searchParams.delete('token');
+      history.replaceState({}, '', u);
+    }
+
+    filePath = params.get('path') || '';
+    const backUrl = addTokenToUrl(filePath ? `/drawio.html?path=${encodeURIComponent(filePath)}` : '/');
+    document.getElementById('tm-back').href = backUrl;
+    document.getElementById('tm-title').textContent = filePath.split('/').pop() || filePath;
+    document.title = 'Time Machine — ' + (filePath.split('/').pop() || filePath);
+
+    try {
+      await ensureAuth();
+      await loadVersions();
+    } catch (e) {
+      if (e.message !== '401') console.error(e);
+    }
+    document.getElementById('tm-loading').style.display = 'none';
+  }
+
+  // ── Version loading ────────────────────────────────────────────────
+  async function loadVersions() {
+    const res = await fetch(addTokenToUrl(`/api/versions?path=${encodeURIComponent(filePath)}`), {
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    // Server returns { file, versions: [...] } or just []
+    versions = Array.isArray(data) ? data : (data.versions || []);
+
+    if (versions.length === 0) {
+      document.getElementById('tm-diagram').querySelector('#tm-empty').style.display = 'flex';
+      document.getElementById('tm-editor').style.display = 'none';
+      updateCommitInfo(null);
+      return;
+    }
+
+    renderTimeline();
+
+    // Resolve hash-based deep link
+    const hashOid = (location.hash || '').replace('#commit=', '');
+    const hashIdx = hashOid ? versions.findIndex(v => v.commit_oid === hashOid) : -1;
+    seekTo(hashIdx >= 0 ? hashIdx : 0, true);
+  }
+
+  // ── Timeline rendering ─────────────────────────────────────────────
+  function renderTimeline() {
+    const trackArea = document.getElementById('tm-track-area');
+    // Remove old dots
+    trackArea.querySelectorAll('.tm-dot').forEach(el => el.remove());
+
+    const oldest = new Date(versions[versions.length - 1].timestamp).getTime();
+    const newest = new Date(versions[0].timestamp).getTime();
+    const span = newest - oldest || 1;
+
+    versions.forEach((v, idx) => {
+      const ts = new Date(v.timestamp).getTime();
+      // newest first → oldest is at right, newest at left
+      // versions[0] is newest → pos 100%, versions[last] is oldest → pos 0%
+      const pct = ((ts - oldest) / span) * 100;
+      const dot = document.createElement('div');
+      dot.className = 'tm-dot';
+      dot.style.left = pct + '%';
+      dot.dataset.idx = idx;
+      dot.title = formatTooltip(v);
+      dot.addEventListener('click', (e) => {
+        e.stopPropagation();
+        seekTo(idx, true);
+      });
+      dot.addEventListener('mouseenter', () => showTooltip(dot, v));
+      dot.addEventListener('mouseleave', hideTooltip);
+      trackArea.appendChild(dot);
+    });
+
+    // Track hover
+    trackArea.addEventListener('pointermove', onTrackMove);
+    trackArea.addEventListener('pointerleave', onTrackLeave);
+    trackArea.addEventListener('click', onTrackClick);
+
+    // Nav buttons
+    document.getElementById('tm-nav-prev').addEventListener('click', () => {
+      if (activeIdx < versions.length - 1) seekTo(activeIdx + 1, true);
+    });
+    document.getElementById('tm-nav-next').addEventListener('click', () => {
+      if (activeIdx > 0) seekTo(activeIdx - 1, true);
+    });
+
+    updateNavButtons();
+  }
+
+  function onTrackMove(e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+
+    // Show cursor line
+    const cursorLine = document.getElementById('tm-cursor-line');
+    cursorLine.style.display = 'block';
+    cursorLine.style.left = (pct * 100) + '%';
+
+    // Find nearest version by timestamp
+    const oldest = new Date(versions[versions.length - 1].timestamp).getTime();
+    const newest = new Date(versions[0].timestamp).getTime();
+    const span = newest - oldest || 1;
+    const targetTs = oldest + pct * span;
+
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    versions.forEach((v, i) => {
+      const d = Math.abs(new Date(v.timestamp).getTime() - targetTs);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    });
+
+    // Debounced seek on hover
+    clearTimeout(hoverDebounce);
+    hoverDebounce = setTimeout(() => seekTo(bestIdx, false), 80);
+  }
+
+  function onTrackLeave() {
+    document.getElementById('tm-cursor-line').style.display = 'none';
+    hideTooltip();
+    clearTimeout(hoverDebounce);
+    // Re-center cursor on active dot
+    if (versions.length > 0) {
+      const v = versions[activeIdx];
+      const oldest = new Date(versions[versions.length - 1].timestamp).getTime();
+      const newest = new Date(versions[0].timestamp).getTime();
+      const span = newest - oldest || 1;
+      const pct = ((new Date(v.timestamp).getTime() - oldest) / span) * 100;
+      const cl = document.getElementById('tm-cursor-line');
+      cl.style.left = pct + '%';
+      cl.style.display = 'block';
+    }
+  }
+
+  function onTrackClick(e) {
+    if (e.target.classList.contains('tm-dot')) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const oldest = new Date(versions[versions.length - 1].timestamp).getTime();
+    const newest = new Date(versions[0].timestamp).getTime();
+    const span = newest - oldest || 1;
+    const targetTs = oldest + pct * span;
+    let bestIdx = 0, bestDist = Infinity;
+    versions.forEach((v, i) => {
+      const d = Math.abs(new Date(v.timestamp).getTime() - targetTs);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    });
+    seekTo(bestIdx, true);
+  }
+
+  // ── Seek ───────────────────────────────────────────────────────────
+  async function seekTo(idx, lock) {
+    if (idx < 0 || idx >= versions.length) return;
+    const v = versions[idx];
+
+    if (lock) {
+      activeIdx = idx;
+      updateActiveDot();
+      updateNavButtons();
+      location.hash = 'commit=' + v.commit_oid;
+    }
+
+    updateCommitInfo(v);
+
+    const cached = cacheGet(v.commit_oid);
+    if (cached !== undefined) {
+      displayXml(cached);
+    } else {
+      fetchVersion(v.commit_oid).then(xml => {
+        if (xml !== null) displayXml(xml);
+      });
+    }
+
+    // Prefetch neighbors
+    prefetchNeighbors(idx);
+  }
+
+  async function fetchVersion(oid) {
+    if (inFlight.has(oid)) return null;
+    const cached = cacheGet(oid);
+    if (cached !== undefined) return cached;
+    inFlight.add(oid);
+    try {
+      const res = await fetch(
+        addTokenToUrl(`/api/file?path=${encodeURIComponent(filePath)}&version=${encodeURIComponent(oid)}`),
+        { credentials: 'include' }
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      const xml = data.content || '';
+      cachePut(oid, xml);
+      return xml;
+    } catch { return null; }
+    finally { inFlight.delete(oid); }
+  }
+
+  function prefetchNeighbors(idx) {
+    [-1, 1, -2, 2].forEach(delta => {
+      const i = idx + delta;
+      if (i >= 0 && i < versions.length) {
+        const oid = versions[i].commit_oid;
+        if (!cacheGet(oid) && !inFlight.has(oid)) fetchVersion(oid);
+      }
+    });
+  }
+
+  function displayXml(xml) {
+    if (!isEditorReady) { pendingXml = xml; return; }
+    postToEditor({ action: 'load', autosave: 0, xml });
+  }
+
+  // ── DOM updates ────────────────────────────────────────────────────
+  function updateActiveDot() {
+    document.querySelectorAll('.tm-dot').forEach((el, i) => {
+      // dots are in DOM order matching versions[]
+      el.classList.toggle('active', parseInt(el.dataset.idx) === activeIdx);
+    });
+  }
+
+  function updateNavButtons() {
+    document.getElementById('tm-nav-prev').disabled = activeIdx >= versions.length - 1;
+    document.getElementById('tm-nav-next').disabled = activeIdx <= 0;
+  }
+
+  function updateCommitInfo(v) {
+    const info = document.getElementById('tm-commit-info');
+    const selInfo = document.getElementById('tm-selected-info');
+    const restoreBtn = document.getElementById('tm-restore-btn');
+    if (!v) {
+      info.querySelector('.ci-version').textContent = '';
+      info.querySelector('.ci-author').textContent = '';
+      info.querySelector('.ci-time').textContent = '';
+      info.querySelector('.ci-msg').textContent = 'No commits yet';
+      selInfo.textContent = '';
+      restoreBtn.style.display = 'none';
+      return;
+    }
+    const when = formatRelative(v.timestamp);
+    const msg = v.message && v.message.trim() ? v.message.trim() : '—';
+    info.querySelector('.ci-version').textContent = 'v' + v.version;
+    info.querySelector('.ci-author').textContent = v.username;
+    info.querySelector('.ci-time').textContent = when;
+    info.querySelector('.ci-msg').textContent = msg;
+    selInfo.textContent = `v${v.version} · ${v.username} · ${when}`;
+    restoreBtn.style.display = 'inline-block';
+    restoreBtn.dataset.oid = v.commit_oid;
+  }
+
+  // ── Tooltip ────────────────────────────────────────────────────────
+  function showTooltip(el, v) {
+    const tip = document.getElementById('tm-tooltip');
+    tip.textContent = formatTooltip(v);
+    tip.style.display = 'block';
+    const rect = el.getBoundingClientRect();
+    tip.style.left = Math.min(rect.left, window.innerWidth - 290) + 'px';
+    tip.style.top = (rect.top - 36) + 'px';
+  }
+
+  function hideTooltip() {
+    document.getElementById('tm-tooltip').style.display = 'none';
+  }
+
+  function formatTooltip(v) {
+    const d = new Date(v.timestamp);
+    const dateStr = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) +
+      ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    const msg = v.message && v.message.trim() ? ` · "${v.message.trim()}"` : '';
+    return `v${v.version} · ${v.username} · ${dateStr}${msg}`;
+  }
+
+  function formatRelative(ts) {
+    const diff = (Date.now() - new Date(ts).getTime()) / 1000;
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    if (diff < 86400 * 30) return Math.floor(diff / 86400) + 'd ago';
+    const d = new Date(ts);
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  // ── Restore ────────────────────────────────────────────────────────
+  document.getElementById('tm-restore-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('tm-restore-btn');
+    const oid = btn.dataset.oid;
+    if (!oid) return;
+    if (!confirm('Restore this version? A new commit will be created with this content.')) return;
+    btn.disabled = true;
+    btn.textContent = 'Restoring…';
+    try {
+      const res = await fetch(addTokenToUrl(`/api/versions?path=${encodeURIComponent(filePath)}`), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commit_oid: oid, message: 'Restored via Time Machine' }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      alert('Restored! Opening editor…');
+      location.href = addTokenToUrl(`/drawio.html?path=${encodeURIComponent(filePath)}`);
+    } catch (e) {
+      alert('Restore failed: ' + e.message);
+      btn.disabled = false;
+      btn.textContent = 'Restore this version';
+    }
+  });
+
+  // ── Keyboard navigation ────────────────────────────────────────────
+  document.addEventListener('keydown', (e) => {
+    if (versions.length === 0) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); if (activeIdx < versions.length - 1) seekTo(activeIdx + 1, true); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); if (activeIdx > 0) seekTo(activeIdx - 1, true); }
+    if (e.key === 'Home') { e.preventDefault(); seekTo(versions.length - 1, true); }
+    if (e.key === 'End') { e.preventDefault(); seekTo(0, true); }
+  });
+
+  // ── iframe message handler ─────────────────────────────────────────
+  window.addEventListener('message', (evt) => {
+    let data;
+    try { data = typeof evt.data === 'string' ? JSON.parse(evt.data) : evt.data; } catch { return; }
+    if (data.event === 'init' || data.action === 'init') {
+      isEditorReady = true;
+      postToEditor({ action: 'configure', config: { readOnly: true } });
+      if (pendingXml !== null) {
+        postToEditor({ action: 'load', autosave: 0, xml: pendingXml });
+        pendingXml = null;
+      }
+    }
+    // Ignore all other events (save, autosave, export, etc.)
+  });
+
+  // ── Boot ───────────────────────────────────────────────────────────
+  init();
+</script>
+</body>
+</html>

@@ -894,9 +894,17 @@
           btnVersionHistory.textContent = 'Version history';
           btnVersionHistory.style.display = f.is_dir ? 'none' : 'inline-block';
           btnVersionHistory.onclick = () => openVersionHistory(f.path, f.name);
+          const btnTimeMachine = document.createElement('a');
+          btnTimeMachine.textContent = 'Time Machine';
+          btnTimeMachine.className = 'button';
+          btnTimeMachine.href = addTokenToUrl(`/timemachine.html?path=${encodeURIComponent(f.path)}`);
+          btnTimeMachine.target = '_blank';
+          btnTimeMachine.rel = 'noopener';
+          btnTimeMachine.style.display = f.is_dir ? 'none' : 'inline-block';
           actions.appendChild(btnOpen);
           actions.appendChild(btnDownload);
           actions.appendChild(btnVersionHistory);
+          actions.appendChild(btnTimeMachine);
           actions.appendChild(btnRename);
           actions.appendChild(btnDelete);
           tdAct.appendChild(actions);
