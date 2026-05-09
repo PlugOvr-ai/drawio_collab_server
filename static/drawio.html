@@ -38,6 +38,33 @@
       font-size: 12px;
     }
 
+    #uncommitted-indicator {
+      display: none;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 100px;
+      background: #fef9c3;
+      color: #854d0e;
+      font-size: 12px;
+      cursor: default;
+    }
+
+    #uncommitted-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #f59e0b;
+      display: inline-block;
+      animation: uncommitted-pulse 2s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes uncommitted-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
     #editor {
       width: 100%;
       height: calc(100% - 48px);
@@ -131,6 +158,9 @@
       <span class="badge" id="user">guest</span>
       <span class="badge" id="status">Connecting...</span>
       <span class="badge" id="version" style="display: none;">v0</span>
+      <span id="uncommitted-indicator" title="This file has uncommitted changes">
+        <span id="uncommitted-dot"></span>Uncommitted
+      </span>
     </div>
     <div class="row">
       <input type="text" id="commit-message" placeholder="Commit message (optional)"
@@ -510,6 +540,9 @@
             } else {
               // console.log(`[WS] Update ignored: content same or empty (same: ${msg.content === lastXml})`);
             }
+          } else if (msg.type === 'commit_status') {
+            const ind = $('uncommitted-indicator');
+            ind.style.display = msg.has_uncommitted ? 'inline-flex' : 'none';
           } else if (msg.type === 'ai_status') {
             addAiActivity(msg.job_id, msg.phase, msg.detail);
           } else if (msg.type === 'conflict') {

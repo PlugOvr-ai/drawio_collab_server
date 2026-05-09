@@ -31,7 +31,6 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "file-watcher")]
 use std::collections::HashMap;
-#[cfg(feature = "file-watcher")]
 use std::time::{Duration, Instant};
 use tokio::{
     fs,
@@ -55,6 +54,8 @@ struct AppState {
     writing_files: Arc<DashMap<String, Instant>>, // file_key -> timestamp when we started writing
     git_manager: Arc<git_versioning::GitVersionManager>,
     push_schedule: Arc<RwLock<PushSchedule>>,
+    dirty_since: Arc<DashMap<String, Instant>>, // file_key -> when it first became dirty (uncommitted)
+    auto_commit_schedule: Arc<RwLock<AutoCommitSchedule>>,
 }
 
 struct Room {
@@ -145,6 +146,9 @@ enum ServerWsMessage {
         phase: String,
         detail: String,
     },
+    CommitStatus {
+        has_uncommitted: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -203,6 +207,7 @@ struct FsEntry {
     is_dir: bool,
     size: Option<u64>,
     modified_ms: Option<i64>,
+    dirty: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -278,6 +283,11 @@ async fn main() -> anyhow::Result<()> {
         push_on_commit: false,
     }));
 
+    let auto_commit_schedule = Arc::new(RwLock::new(AutoCommitSchedule {
+        enabled: false,
+        interval_seconds: 1800, // 30 min default
+    }));
+
     let state = AppState {
         sessions: Arc::new(DashMap::new()),
         rooms: Arc::new(DashMap::new()),
@@ -289,6 +299,8 @@ async fn main() -> anyhow::Result<()> {
         writing_files: Arc::new(DashMap::new()),
         git_manager,
         push_schedule: push_schedule.clone(),
+        dirty_since: Arc::new(DashMap::new()),
+        auto_commit_schedule: auto_commit_schedule.clone(),
     };
 
     // Start file watcher task
@@ -307,6 +319,14 @@ async fn main() -> anyhow::Result<()> {
         let push_state = state.clone();
         tokio::spawn(async move {
             scheduled_push_task(push_state).await;
+        });
+    }
+
+    // Start auto-commit task
+    {
+        let ac_state = state.clone();
+        tokio::spawn(async move {
+            auto_commit_task(ac_state).await;
         });
     }
 
@@ -350,6 +370,10 @@ async fn main() -> anyhow::Result<()> {
             .route(
                 "/api/admin/schedule",
                 get(api_get_schedule).post(api_set_schedule),
+            )
+            .route(
+                "/api/admin/auto-commit-schedule",
+                get(api_get_auto_commit_schedule).post(api_set_auto_commit_schedule),
             )
             .route("/api/admin/test-push", post(api_test_push))
             .route("/raw/:name", get(get_raw_file))
@@ -1041,12 +1065,19 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
         let version = room.version.load(std::sync::atomic::Ordering::SeqCst);
         let init_msg = ServerWsMessage::Init {
             version,
-            content,
+            content: content.clone(),
             your_id: conn_id.clone(),
         };
         let _ = socket
             .send(WsRawMessage::Text(
                 serde_json::to_string(&init_msg).unwrap(),
+            ))
+            .await;
+        // Send initial commit status so the indicator shows immediately
+        let has_uncommitted = state.git_manager.has_uncommitted_changes(&file_key, &content).await;
+        let _ = socket
+            .send(WsRawMessage::Text(
+                serde_json::to_string(&ServerWsMessage::CommitStatus { has_uncommitted }).unwrap(),
             ))
             .await;
     }
@@ -1135,6 +1166,11 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
 
                                     // Note: Git commits are not created automatically from WebSocket updates.
                                     // Use the /api/versions/checkpoint endpoint or save with ?commit=true to create commits.
+
+                                    // Mark dirty and broadcast commit status to all room members
+                                    state.dirty_since.entry(file_key.clone()).or_insert(Instant::now());
+                                    let has_uncommitted = state.git_manager.has_uncommitted_changes(&file_key, &content).await;
+                                    let _ = room.tx.send(ServerWsMessage::CommitStatus { has_uncommitted });
 
                                     let _ = room.tx.send(ServerWsMessage::Update {
                                         version: new_version,
@@ -1291,19 +1327,23 @@ async fn api_list(
                 is_dir: true,
                 size: None,
                 modified_ms,
+                dirty: false,
             });
         } else if meta.is_file() {
             if name.ends_with(".drawio") {
+                let file_path = if safe.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}/{}", safe, name)
+                };
+                let dirty = state.dirty_since.contains_key(&file_path);
                 out.push(FsEntry {
                     name: name.clone(),
-                    path: if safe.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{}/{}", safe, name)
-                    },
+                    path: file_path,
                     is_dir: false,
                     size,
                     modified_ms,
+                    dirty,
                 });
             }
         } else {
@@ -1323,18 +1363,22 @@ async fn api_list(
                                 is_dir: true,
                                 size: None,
                                 modified_ms,
+                                dirty: false,
                             });
                         } else if target_meta.is_file() && name.ends_with(".drawio") {
+                            let file_path = if safe.is_empty() {
+                                name.clone()
+                            } else {
+                                format!("{}/{}", safe, name)
+                            };
+                            let dirty = state.dirty_since.contains_key(&file_path);
                             out.push(FsEntry {
                                 name: name.clone(),
-                                path: if safe.is_empty() {
-                                    name.clone()
-                                } else {
-                                    format!("{}/{}", safe, name)
-                                },
+                                path: file_path,
                                 is_dir: false,
                                 size,
                                 modified_ms,
+                                dirty,
                             });
                         }
                     }
@@ -1461,6 +1505,16 @@ async fn api_put_file(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
+    // Track dirty state (file saved but not yet committed)
+    let is_commit = q.get("commit").map(|s| s == "true").unwrap_or(false);
+    if !is_commit {
+        state.dirty_since.entry(safe.clone()).or_insert(Instant::now());
+        if let Some(ref r) = room {
+            let has_uncommitted = state.git_manager.has_uncommitted_changes(&safe, &req.content).await;
+            let _ = r.tx.send(ServerWsMessage::CommitStatus { has_uncommitted });
+        }
+    }
+
     // Broadcast update to all WebSocket clients so they sync their version
     if let Some(ref r) = room {
         let _ = r.tx.send(ServerWsMessage::Update {
@@ -1472,13 +1526,15 @@ async fn api_put_file(
     }
 
     // Create Git commit only if commit=true query parameter is present
-    if q.get("commit").map(|s| s == "true").unwrap_or(false) {
+    if is_commit {
         let git_mgr = state.git_manager.clone();
         let safe_clone = safe.clone();
         let content_clone = req.content.clone();
         let username_clone = username.clone();
         let message = q.get("message").map(|s| s.clone());
         let push_schedule = state.push_schedule.clone();
+        let dirty_since = state.dirty_since.clone();
+        let rooms = state.rooms.clone();
         tokio::task::spawn(async move {
             if let Err(e) = git_mgr
                 .create_version(
@@ -1493,6 +1549,10 @@ async fn api_put_file(
             {
                 error!("Failed to create Git version for {}: {e:?}", safe_clone);
             } else {
+                dirty_since.remove(&safe_clone);
+                if let Some(room) = rooms.get(&safe_clone) {
+                    let _ = room.tx.send(ServerWsMessage::CommitStatus { has_uncommitted: false });
+                }
                 // Push after commit if push_on_commit is enabled
                 let schedule = push_schedule.read().await;
                 if schedule.push_on_commit {
@@ -2770,6 +2830,12 @@ struct PushSchedule {
     push_on_commit: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AutoCommitSchedule {
+    enabled: bool,
+    interval_seconds: u64, // minimum 60
+}
+
 async fn api_list_versions(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -2915,6 +2981,12 @@ async fn api_checkpoint(
 
     // Push after commit if push_on_commit is enabled
     if result.is_ok() {
+        // Clear dirty tracking and notify all room members
+        state.dirty_since.remove(&safe);
+        if let Some(room) = state.rooms.get(&safe) {
+            let _ = room.tx.send(ServerWsMessage::CommitStatus { has_uncommitted: false });
+        }
+
         let schedule = state.push_schedule.read().await;
         if schedule.push_on_commit {
             info!(
@@ -3324,4 +3396,101 @@ async fn scheduled_push_task(state: AppState) {
             }
         }
     }
+}
+
+// Auto-commit task: commits dirty files after the configured interval
+async fn auto_commit_task(state: AppState) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        interval.tick().await;
+
+        let schedule = state.auto_commit_schedule.read().await.clone();
+        if !schedule.enabled {
+            continue;
+        }
+
+        let commit_interval = Duration::from_secs(schedule.interval_seconds.max(60));
+        let keys: Vec<(String, Instant)> = state
+            .dirty_since
+            .iter()
+            .map(|e| (e.key().clone(), *e.value()))
+            .collect();
+
+        for (file_key, became_dirty_at) in keys {
+            if became_dirty_at.elapsed() < commit_interval {
+                continue;
+            }
+
+            let content = if let Some(room) = state.rooms.get(&file_key) {
+                room.content.read().await.clone()
+            } else {
+                let path = to_data_path(&state.data_dir, &file_key);
+                match fs::read_to_string(&path).await {
+                    Ok(c) => c,
+                    Err(_) => {
+                        state.dirty_since.remove(&file_key);
+                        continue;
+                    }
+                }
+            };
+
+            let version = state
+                .rooms
+                .get(&file_key)
+                .map(|r| r.version.load(Ordering::SeqCst))
+                .unwrap_or(0);
+
+            info!("Auto-committing {}", file_key);
+            match state
+                .git_manager
+                .create_version(&file_key, &content, "auto-commit", version, Some("Auto-commit"), true)
+                .await
+            {
+                Ok(_) => {
+                    state.dirty_since.remove(&file_key);
+                    if let Some(room) = state.rooms.get(&file_key) {
+                        let _ = room.tx.send(ServerWsMessage::CommitStatus { has_uncommitted: false });
+                    }
+                    info!("Auto-commit successful for {}", file_key);
+                }
+                Err(e) => {
+                    error!("Auto-commit failed for {}: {e:?}", file_key);
+                }
+            }
+        }
+    }
+}
+
+async fn api_get_auto_commit_schedule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !check_admin_token(&state, &headers, &q) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let schedule = state.auto_commit_schedule.read().await.clone();
+    Json(schedule).into_response()
+}
+
+async fn api_set_auto_commit_schedule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    Json(req): Json<AutoCommitSchedule>,
+) -> impl IntoResponse {
+    if !check_admin_token(&state, &headers, &q) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let interval = req.interval_seconds.max(60);
+    let mut schedule = state.auto_commit_schedule.write().await;
+    schedule.enabled = req.enabled;
+    schedule.interval_seconds = interval;
+    info!(
+        "Auto-commit schedule updated: enabled={}, interval={}s",
+        schedule.enabled, schedule.interval_seconds
+    );
+    StatusCode::NO_CONTENT.into_response()
 }

@@ -514,6 +514,33 @@
     .settings-backdrop {
       backdrop-filter: blur(2px);
     }
+
+    .dirty-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 1px 6px;
+      border-radius: 100px;
+      background: #fef9c3;
+      color: #854d0e;
+      font-size: 11px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .dirty-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #f59e0b;
+      flex-shrink: 0;
+      animation: dirty-pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes dirty-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
   </style>
 </head>
 
@@ -701,6 +728,16 @@
           label.style.display = 'block';
           nameCell.appendChild(dot);
           nameCell.appendChild(label);
+          if (!f.is_dir && f.dirty) {
+            const badge = document.createElement('span');
+            badge.className = 'dirty-badge';
+            badge.title = 'This file has uncommitted changes';
+            const bdot = document.createElement('span');
+            bdot.className = 'dirty-dot';
+            badge.appendChild(bdot);
+            badge.appendChild(document.createTextNode('Uncommitted'));
+            nameCell.appendChild(badge);
+          }
           tdName.appendChild(nameCell);
           tdName.style.cursor = 'pointer';
           tdName.onclick = () => {
@@ -1122,6 +1159,8 @@
 
     refreshMe();
     refreshFiles();
+    // Refresh the file list every 30 seconds so dirty indicators stay current
+    setInterval(refreshFiles, 30000);
     // load viewer script for previews
     (function loadViewer() {
       const s = document.createElement('script');

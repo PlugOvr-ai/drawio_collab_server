@@ -466,6 +466,15 @@ impl GitVersionManager {
     }
     
     
+    /// Check if a file has uncommitted changes compared to the last committed version
+    pub async fn has_uncommitted_changes(&self, file_path: &str, content: &str) -> bool {
+        let states = self.file_states.read().await;
+        match states.get(file_path) {
+            None => true, // never committed in this session
+            Some(s) => s.last_content_hash != Self::content_hash(content),
+        }
+    }
+
     /// Run garbage collection to optimize repository
     pub async fn gc(&self) -> Result<()> {
         info!("Running Git garbage collection");

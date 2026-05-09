@@ -186,8 +186,26 @@
       <button id="save-schedule">Save Schedule Configuration</button>
       <button id="load-schedule" style="margin-left: 10px; background: var(--muted);">Load Current</button>
     </div>
+
+    <div class="card">
+      <div class="section-title">Auto-commit Schedule</div>
+      <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="autocommit-enabled" />
+          <label for="autocommit-enabled" style="margin: 0;">Enable automatic commits</label>
+        </div>
+        <div class="help-text">When enabled, the server will automatically commit unsaved changes after the configured interval — even if no user clicks "Commit"</div>
+      </div>
+      <div class="form-group">
+        <label for="autocommit-interval">Commit Interval (minutes)</label>
+        <input type="number" id="autocommit-interval" value="30" min="1" step="1" />
+        <div class="help-text">How long a file must have uncommitted changes before an auto-commit fires (minimum: 1 minute)</div>
+      </div>
+      <button id="save-autocommit">Save Auto-commit Configuration</button>
+      <button id="load-autocommit" style="margin-left: 10px; background: var(--muted);">Load Current</button>
+    </div>
   </div>
-  
+
   <script>
     const $ = (id) => document.getElementById(id);
     const statusEl = $('status');
@@ -426,21 +444,55 @@
       }
     }
     
+    async function loadAutoCommit() {
+      try {
+        const data = await fetchJSON('/api/admin/auto-commit-schedule');
+        $('autocommit-enabled').checked = data.enabled || false;
+        $('autocommit-interval').value = Math.round((data.interval_seconds || 1800) / 60);
+      } catch (e) {
+        showStatus('Failed to load auto-commit schedule: ' + e.message, 'error');
+      }
+    }
+
+    async function saveAutoCommit() {
+      const enabled = $('autocommit-enabled').checked;
+      const intervalMinutes = parseInt($('autocommit-interval').value, 10);
+      if (isNaN(intervalMinutes) || intervalMinutes < 1) {
+        showStatus('Interval must be at least 1 minute', 'error');
+        return;
+      }
+      try {
+        await fetchJSON('/api/admin/auto-commit-schedule', {
+          method: 'POST',
+          body: JSON.stringify({
+            enabled,
+            interval_seconds: intervalMinutes * 60,
+          }),
+        });
+        showStatus('Auto-commit schedule saved', 'success');
+      } catch (e) {
+        showStatus('Failed to save auto-commit schedule: ' + e.message, 'error');
+      }
+    }
+
     // Event listeners
     $('save-remote').onclick = saveRemote;
     $('load-remote').onclick = loadRemote;
     $('test-push').onclick = testPush;
     $('save-schedule').onclick = saveSchedule;
     $('load-schedule').onclick = loadSchedule;
-    
+    $('save-autocommit').onclick = saveAutoCommit;
+    $('load-autocommit').onclick = loadAutoCommit;
+
     // Update preview when URL or token changes
     $('remote-url').addEventListener('input', updateUrlPreview);
     $('remote-token').addEventListener('input', updateUrlPreview);
-    
+
     // Load on page load
     if (token) {
       loadRemote();
       loadSchedule();
+      loadAutoCommit();
     }
   </script>
 </body>
