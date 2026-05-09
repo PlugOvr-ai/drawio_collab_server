@@ -54,6 +54,8 @@
       position: sticky;
       top: 0;
       box-shadow: var(--shadow-sm);
+      display: flex;
+      flex-direction: column;
     }
 
     main {
@@ -556,9 +558,10 @@
         <button id="nav-new-file"><span class="icon file"></span><span>New file</span></button>
         <button id="nav-upload"><span class="icon file"></span><span>Upload file</span></button>
         <button id="nav-settings"><span class="icon gear"></span><span>Settings</span></button>
-
       </div>
-
+      <div style="padding: 12px 16px; font-size: 11px; color: var(--text-secondary); border-top: 1px solid var(--border); margin-top: auto;">
+        <span id="server-version"></span>
+      </div>
     </aside>
     <main>
       <header class="top">
@@ -1250,6 +1253,11 @@
       refreshMe();
       refreshFiles();
     });
+
+    fetch('/api/version').then(r => r.json()).then(d => {
+      const el = $('server-version');
+      if (el && d.version) el.textContent = 'v' + d.version;
+    }).catch(() => {});
     // Refresh the file list every 30 seconds so dirty indicators stay current
     setInterval(refreshFiles, 30000);
     // load viewer script for previews

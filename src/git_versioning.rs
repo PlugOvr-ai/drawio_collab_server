@@ -484,4 +484,47 @@ impl GitVersionManager {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_hash_is_deterministic() {
+        let h1 = GitVersionManager::content_hash("hello world");
+        let h2 = GitVersionManager::content_hash("hello world");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn content_hash_differs_for_different_input() {
+        let h1 = GitVersionManager::content_hash("foo");
+        let h2 = GitVersionManager::content_hash("bar");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn content_change_identical_is_zero() {
+        let pct = GitVersionManager::content_change_percent("same content", "same content");
+        assert_eq!(pct, 0.0);
+    }
+
+    #[test]
+    fn content_change_from_empty_is_100() {
+        let pct = GitVersionManager::content_change_percent("", "new content");
+        assert_eq!(pct, 100.0);
+    }
+
+    #[test]
+    fn content_change_both_empty_is_100() {
+        let pct = GitVersionManager::content_change_percent("", "");
+        assert_eq!(pct, 100.0);
+    }
+
+    #[test]
+    fn content_change_different_is_nonzero() {
+        let pct = GitVersionManager::content_change_percent("aaa", "bbb");
+        assert!(pct > 0.0);
+    }
+}
+
 

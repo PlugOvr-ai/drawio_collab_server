@@ -359,6 +359,7 @@ async fn main() -> anyhow::Result<()> {
                 "/api/versions",
                 get(api_list_versions).post(api_restore_version),
             )
+            .route("/api/version", get(get_server_version))
             .route("/api/versions/checkpoint", post(api_checkpoint))
             .route("/api/versions/push", post(api_push_to_remote))
             .route("/api/versions/remote", post(api_set_remote))
@@ -3493,4 +3494,63 @@ async fn api_set_auto_commit_schedule(
         schedule.enabled, schedule.interval_seconds
     );
     StatusCode::NO_CONTENT.into_response()
+}
+
+async fn get_server_version() -> impl IntoResponse {
+    Json(serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_name_accepts_valid() {
+        assert_eq!(sanitize_name("file.drawio"), Some("file.drawio".to_string()));
+        assert_eq!(sanitize_name("my-diagram_v2"), Some("my-diagram_v2".to_string()));
+    }
+
+    #[test]
+    fn sanitize_name_rejects_slash() {
+        assert_eq!(sanitize_name("folder/file.drawio"), None);
+        assert_eq!(sanitize_name("a\\b"), None);
+    }
+
+    #[test]
+    fn sanitize_name_rejects_special_chars() {
+        assert_eq!(sanitize_name("file name.drawio"), None); // space not allowed
+        assert_eq!(sanitize_name("file<>.drawio"), None);
+    }
+
+    #[test]
+    fn sanitize_rel_path_accepts_nested() {
+        assert_eq!(
+            sanitize_rel_path("folder/sub/file.drawio"),
+            Some("folder/sub/file.drawio".to_string())
+        );
+        assert_eq!(
+            sanitize_rel_path("my-folder/diagram.drawio"),
+            Some("my-folder/diagram.drawio".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_rel_path_rejects_traversal() {
+        assert_eq!(sanitize_rel_path("../secret"), None);
+        assert_eq!(sanitize_rel_path("folder/../secret"), None);
+        assert_eq!(sanitize_rel_path("./file"), None);
+    }
+
+    #[test]
+    fn sanitize_rel_path_rejects_backslash() {
+        assert_eq!(sanitize_rel_path("folder\\file"), None);
+    }
+
+    #[test]
+    fn sanitize_rel_path_strips_leading_slash() {
+        assert_eq!(
+            sanitize_rel_path("/folder/file.drawio"),
+            Some("folder/file.drawio".to_string())
+        );
+    }
 }
