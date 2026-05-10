@@ -3504,7 +3504,7 @@ async fn auto_commit_task(state: AppState) {
             let commit_msg = if editors.is_empty() {
                 "Auto-commit".to_string()
             } else {
-                format!("Auto-commit\n\nChanges by: {}", editors.join(", "))
+                format!("Auto-commit — {}", editors.join(", "))
             };
 
             info!("Auto-committing {} (editors: {:?})", file_key, editors);

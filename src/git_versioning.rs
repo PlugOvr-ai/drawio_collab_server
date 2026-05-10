@@ -340,7 +340,15 @@ impl GitVersionManager {
                         .and_then(|l| l.split(" by ").nth(1))
                         .unwrap_or("unknown")
                         .to_string();
-                    let msg = lines.get(2).unwrap_or(&"").to_string();
+                    // Extract all content lines between header (line 0-1) and Metadata section
+                    let msg = lines[2..]
+                        .iter()
+                        .take_while(|l| !l.starts_with("Metadata:"))
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .trim()
+                        .to_string();
                     let timestamp = DateTime::from_timestamp(
                         commit.time().seconds(),
                         0,
