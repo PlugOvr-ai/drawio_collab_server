@@ -1079,7 +1079,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
             ))
             .await;
         // Send initial commit status so the indicator shows immediately
-        let has_uncommitted = state.git_manager.has_uncommitted_changes(&file_key, &content).await;
+        let has_uncommitted = state.git_manager.has_uncommitted_changes(&file_key).await;
         let _ = socket
             .send(WsRawMessage::Text(
                 serde_json::to_string(&ServerWsMessage::CommitStatus { has_uncommitted }).unwrap(),
@@ -1174,7 +1174,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
 
                                     // Mark dirty and broadcast commit status to all room members
                                     state.dirty_since.entry(file_key.clone()).or_insert(Instant::now());
-                                    let has_uncommitted = state.git_manager.has_uncommitted_changes(&file_key, &content).await;
+                                    let has_uncommitted = state.git_manager.has_uncommitted_changes(&file_key).await;
                                     let _ = room.tx.send(ServerWsMessage::CommitStatus { has_uncommitted });
 
                                     let _ = room.tx.send(ServerWsMessage::Update {
@@ -1296,6 +1296,7 @@ async fn api_list(
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     };
     let dir_path = to_data_rel_path(&state.data_dir, &safe);
+    let dirty_files = state.git_manager.get_dirty_files().await;
     let mut out: Vec<FsEntry> = Vec::new();
     let mut rd = match fs::read_dir(&dir_path).await {
         Ok(rd) => rd,
@@ -1341,7 +1342,7 @@ async fn api_list(
                 } else {
                     format!("{}/{}", safe, name)
                 };
-                let dirty = state.dirty_since.contains_key(&file_path);
+                let dirty = dirty_files.contains(&file_path);
                 out.push(FsEntry {
                     name: name.clone(),
                     path: file_path,
@@ -1376,7 +1377,7 @@ async fn api_list(
                             } else {
                                 format!("{}/{}", safe, name)
                             };
-                            let dirty = state.dirty_since.contains_key(&file_path);
+                            let dirty = dirty_files.contains(&file_path);
                             out.push(FsEntry {
                                 name: name.clone(),
                                 path: file_path,
@@ -1515,7 +1516,7 @@ async fn api_put_file(
     if !is_commit {
         state.dirty_since.entry(safe.clone()).or_insert(Instant::now());
         if let Some(ref r) = room {
-            let has_uncommitted = state.git_manager.has_uncommitted_changes(&safe, &req.content).await;
+            let has_uncommitted = state.git_manager.has_uncommitted_changes(&safe).await;
             let _ = r.tx.send(ServerWsMessage::CommitStatus { has_uncommitted });
         }
     }

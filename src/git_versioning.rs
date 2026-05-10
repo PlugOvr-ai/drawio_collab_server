@@ -466,13 +466,40 @@ impl GitVersionManager {
     }
     
     
-    /// Check if a file has uncommitted changes compared to the last committed version
-    pub async fn has_uncommitted_changes(&self, file_path: &str, content: &str) -> bool {
-        let states = self.file_states.read().await;
-        match states.get(file_path) {
-            None => true, // never committed in this session
-            Some(s) => s.last_content_hash != Self::content_hash(content),
-        }
+    /// Check if a file has uncommitted changes by querying git status directly.
+    /// Accurate across restarts; requires the file to be written to disk first.
+    pub async fn has_uncommitted_changes(&self, file_path: &str) -> bool {
+        let data_dir = self.data_dir.clone();
+        let file_path = file_path.to_string();
+        tokio::task::spawn_blocking(move || {
+            let repo = Repository::open(&data_dir).ok()?;
+            let status = repo.status_file(Path::new(&file_path)).ok()?;
+            Some(!status.is_empty())
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(true)
+    }
+
+    /// Return the set of all .drawio files that have uncommitted changes.
+    /// Used by the file-list API to show dirty indicators without per-file calls.
+    pub async fn get_dirty_files(&self) -> std::collections::HashSet<String> {
+        let data_dir = self.data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            let repo = Repository::open(&data_dir).ok()?;
+            let statuses = repo.statuses(None).ok()?;
+            let dirty = statuses
+                .iter()
+                .filter(|e| !e.status().is_empty())
+                .filter_map(|e| e.path().map(|p| p.to_string()))
+                .collect();
+            Some(dirty)
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
     }
 
     /// Run garbage collection to optimize repository
