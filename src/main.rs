@@ -274,19 +274,23 @@ async fn main() -> anyhow::Result<()> {
             .context("Failed to initialize Git version manager")?,
     );
 
-    // Initialize push schedule (default: disabled)
-    let push_schedule = Arc::new(RwLock::new(PushSchedule {
+    // Load persisted config (schedules survive restarts)
+    let saved_config = ServerConfig::load(&data_dir);
+
+    let push_schedule = Arc::new(RwLock::new(saved_config.push_schedule.unwrap_or(PushSchedule {
         enabled: false,
-        interval_seconds: 3600, // 1 hour default
+        interval_seconds: 3600,
         remote_name: "origin".to_string(),
         branch: "main".to_string(),
         push_on_commit: false,
-    }));
+    })));
 
-    let auto_commit_schedule = Arc::new(RwLock::new(AutoCommitSchedule {
-        enabled: false,
-        interval_seconds: 1800, // 30 min default
-    }));
+    let auto_commit_schedule = Arc::new(RwLock::new(
+        saved_config.auto_commit_schedule.unwrap_or(AutoCommitSchedule {
+            enabled: false,
+            interval_seconds: 1800,
+        }),
+    ));
 
     let state = AppState {
         sessions: Arc::new(DashMap::new()),
@@ -2837,6 +2841,33 @@ struct AutoCommitSchedule {
     interval_seconds: u64, // minimum 60
 }
 
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct ServerConfig {
+    push_schedule: Option<PushSchedule>,
+    auto_commit_schedule: Option<AutoCommitSchedule>,
+}
+
+impl ServerConfig {
+    fn path(data_dir: &Path) -> PathBuf {
+        data_dir.join("config.json")
+    }
+
+    fn load(data_dir: &Path) -> Self {
+        let path = Self::path(data_dir);
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self, data_dir: &Path) {
+        let path = Self::path(data_dir);
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
 async fn api_list_versions(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -3278,6 +3309,12 @@ async fn api_set_schedule(
         schedule.push_on_commit
     );
 
+    let config = ServerConfig {
+        push_schedule: Some(schedule.clone()),
+        auto_commit_schedule: Some(state.auto_commit_schedule.read().await.clone()),
+    };
+    config.save(&state.data_dir);
+
     Json(schedule.clone()).into_response()
 }
 
@@ -3493,6 +3530,13 @@ async fn api_set_auto_commit_schedule(
         "Auto-commit schedule updated: enabled={}, interval={}s",
         schedule.enabled, schedule.interval_seconds
     );
+
+    let config = ServerConfig {
+        push_schedule: Some(state.push_schedule.read().await.clone()),
+        auto_commit_schedule: Some(schedule.clone()),
+    };
+    config.save(&state.data_dir);
+
     StatusCode::NO_CONTENT.into_response()
 }
 
