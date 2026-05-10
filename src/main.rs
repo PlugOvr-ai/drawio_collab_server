@@ -3451,13 +3451,23 @@ async fn auto_commit_task(state: AppState) {
         }
 
         let commit_interval = Duration::from_secs(schedule.interval_seconds.max(60));
-        let keys: Vec<(String, Instant)> = state
-            .dirty_since
-            .iter()
-            .map(|e| (e.key().clone(), *e.value()))
-            .collect();
 
-        for (file_key, became_dirty_at) in keys {
+        // Use git as the source of truth for which files are dirty.
+        // dirty_since is used only for interval timing: if a file is dirty
+        // but not yet in the map, add it now so the clock starts ticking.
+        let dirty_files = state.git_manager.get_dirty_files().await;
+        for file in &dirty_files {
+            state.dirty_since.entry(file.clone()).or_insert_with(Instant::now);
+        }
+        // Remove files from dirty_since that git no longer considers dirty
+        // (e.g. committed by another path) to keep the map accurate.
+        state.dirty_since.retain(|k, _| dirty_files.contains(k));
+
+        for file_key in dirty_files {
+            let became_dirty_at = match state.dirty_since.get(&file_key) {
+                Some(e) => *e.value(),
+                None => continue,
+            };
             if became_dirty_at.elapsed() < commit_interval {
                 continue;
             }
