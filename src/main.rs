@@ -55,6 +55,7 @@ struct AppState {
     git_manager: Arc<git_versioning::GitVersionManager>,
     push_schedule: Arc<RwLock<PushSchedule>>,
     dirty_since: Arc<DashMap<String, Instant>>, // file_key -> when it first became dirty (uncommitted)
+    file_editors: Arc<DashMap<String, std::collections::BTreeSet<String>>>, // file_key -> users who edited since last commit
     auto_commit_schedule: Arc<RwLock<AutoCommitSchedule>>,
 }
 
@@ -304,6 +305,7 @@ async fn main() -> anyhow::Result<()> {
         git_manager,
         push_schedule: push_schedule.clone(),
         dirty_since: Arc::new(DashMap::new()),
+        file_editors: Arc::new(DashMap::new()),
         auto_commit_schedule: auto_commit_schedule.clone(),
     };
 
@@ -1174,6 +1176,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, username: String, fil
 
                                     // Mark dirty and broadcast commit status to all room members
                                     state.dirty_since.entry(file_key.clone()).or_insert(Instant::now());
+                                    state.file_editors.entry(file_key.clone()).or_default().insert(username.clone());
                                     let has_uncommitted = state.git_manager.has_uncommitted_changes(&file_key).await;
                                     let _ = room.tx.send(ServerWsMessage::CommitStatus { has_uncommitted });
 
@@ -1515,6 +1518,7 @@ async fn api_put_file(
     let is_commit = q.get("commit").map(|s| s == "true").unwrap_or(false);
     if !is_commit {
         state.dirty_since.entry(safe.clone()).or_insert(Instant::now());
+        state.file_editors.entry(safe.clone()).or_default().insert(username.clone());
         if let Some(ref r) = room {
             let has_uncommitted = state.git_manager.has_uncommitted_changes(&safe).await;
             let _ = r.tx.send(ServerWsMessage::CommitStatus { has_uncommitted });
@@ -3016,6 +3020,7 @@ async fn api_checkpoint(
     if result.is_ok() {
         // Clear dirty tracking and notify all room members
         state.dirty_since.remove(&safe);
+        state.file_editors.remove(&safe);
         if let Some(room) = state.rooms.get(&safe) {
             let _ = room.tx.send(ServerWsMessage::CommitStatus { has_uncommitted: false });
         }
@@ -3491,14 +3496,26 @@ async fn auto_commit_task(state: AppState) {
                 .map(|r| r.version.load(Ordering::SeqCst))
                 .unwrap_or(0);
 
-            info!("Auto-committing {}", file_key);
+            let editors: Vec<String> = state
+                .file_editors
+                .get(&file_key)
+                .map(|e| e.value().iter().cloned().collect())
+                .unwrap_or_default();
+            let commit_msg = if editors.is_empty() {
+                "Auto-commit".to_string()
+            } else {
+                format!("Auto-commit\n\nChanges by: {}", editors.join(", "))
+            };
+
+            info!("Auto-committing {} (editors: {:?})", file_key, editors);
             match state
                 .git_manager
-                .create_version(&file_key, &content, "auto-commit", version, Some("Auto-commit"), true)
+                .create_version(&file_key, &content, "auto-commit", version, Some(&commit_msg), true)
                 .await
             {
                 Ok(_) => {
                     state.dirty_since.remove(&file_key);
+                    state.file_editors.remove(&file_key);
                     if let Some(room) = state.rooms.get(&file_key) {
                         let _ = room.tx.send(ServerWsMessage::CommitStatus { has_uncommitted: false });
                     }
