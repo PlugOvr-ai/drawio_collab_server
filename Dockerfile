@@ -46,8 +46,9 @@ COPY static/drawio.html static/index.html static/token.html static/admin.html st
 # Copy the binary from builder
 COPY --from=builder /app/target/release/drawio_collab_server /app/drawio_collab_server
 
-# Create data directory
+# Create data directory and declare it as a volume mount point
 RUN mkdir -p data
+VOLUME ["/app/data"]
 
 # Expose port
 EXPOSE 3000

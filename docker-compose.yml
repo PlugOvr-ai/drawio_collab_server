@@ -1,0 +1,17 @@
+services:
+  drawio:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - drawio_data:/app/data
+    environment:
+      - PORT=3000
+      - DATA_DIR=data
+      # Uncomment and set these to use fixed tokens across restarts:
+      # - DRAWIO_TOKEN=your-access-token
+      # - DRAWIO_ADMIN_TOKEN=your-admin-token
+    restart: unless-stopped
+
+volumes:
+  drawio_data:

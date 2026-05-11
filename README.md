@@ -11,17 +11,27 @@ A collaborative draw.io server built with Rust and Axum.
 
 ## Quick Start
 
-### Using Docker
+### Using Docker Compose (recommended)
+
+```bash
+docker compose up -d
+```
+
+All data — diagrams, git history, and server config (schedules, remote settings) — is stored in a named Docker volume (`drawio_data`) and persists across restarts and image rebuilds.
+
+To use fixed tokens, edit `docker-compose.yml` and uncomment the `DRAWIO_TOKEN` / `DRAWIO_ADMIN_TOKEN` environment variables before first start.
+
+### Using Docker directly
 
 ```bash
 # Build the image
 docker build -t drawio_collab_server .
 
-# Run the container (with random token)
-docker run -p 3000:3000 -v $(pwd)/data:/app/data drawio_collab_server
+# Run with a persistent data volume
+docker run -p 3000:3000 -v drawio_data:/app/data drawio_collab_server
 
 # Run with a predefined token
-docker run -p 3000:3000 -v $(pwd)/data:/app/data -e DRAWIO_TOKEN=your-secret-token drawio_collab_server
+docker run -p 3000:3000 -v drawio_data:/app/data -e DRAWIO_TOKEN=your-secret-token drawio_collab_server
 ```
 
 Access the server at `http://localhost:3000`
