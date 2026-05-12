@@ -317,6 +317,7 @@
   const inFlight = new Set();     // OIDs currently being fetched
   let hoverDebounce = null;
   let filePath = '';
+  let currentPageId = null;   // page ID from draw.io events, used to restore tab on seek
 
   // ── URL helpers ────────────────────────────────────────────────────
   function addTokenToUrl(url) {
@@ -563,9 +564,21 @@
     });
   }
 
+  // Return the 0-based index of the page with the given ID in the XML, or 0 if not found.
+  function pageIndexFromXml(xml, pageId) {
+    if (!pageId || !xml) return 0;
+    try {
+      const doc = new DOMParser().parseFromString(xml, 'text/xml');
+      const diagrams = Array.from(doc.querySelectorAll('diagram'));
+      const idx = diagrams.findIndex(d => d.getAttribute('id') === pageId);
+      return idx >= 0 ? idx : 0;
+    } catch { return 0; }
+  }
+
   function displayXml(xml) {
     if (!isEditorReady) { pendingXml = xml; return; }
-    postToEditor({ action: 'load', autosave: 0, xml });
+    const page = pageIndexFromXml(xml, currentPageId);
+    postToEditor({ action: 'load', autosave: 0, xml, page });
   }
 
   // ── DOM updates ────────────────────────────────────────────────────
@@ -676,15 +689,24 @@
   window.addEventListener('message', (evt) => {
     let data;
     try { data = typeof evt.data === 'string' ? JSON.parse(evt.data) : evt.data; } catch { return; }
+
     if (data.event === 'init' || data.action === 'init') {
       isEditorReady = true;
       postToEditor({ action: 'configure', config: { readOnly: true } });
       if (pendingXml !== null) {
-        postToEditor({ action: 'load', autosave: 0, xml: pendingXml });
+        const page = pageIndexFromXml(pendingXml, currentPageId);
+        postToEditor({ action: 'load', autosave: 0, xml: pendingXml, page });
         pendingXml = null;
       }
+      return;
     }
-    // Ignore all other events (save, autosave, export, etc.)
+
+    // Track the current page ID from any event that carries it.
+    // backgroundPagePosition fires on mouse movement and always includes the page.
+    // pageSelected fires when the user clicks a different tab.
+    if (data.page != null) {
+      currentPageId = data.page;
+    }
   });
 
   // ── Boot ───────────────────────────────────────────────────────────
